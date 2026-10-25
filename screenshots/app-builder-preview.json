@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Halcyon Ops",
+      "hasCanvas": true,
+      "bodyTextLen": 412,
+      "bodyTextHash": "8b3235fc820c4079c122703862e3a5bf6e15440b2ce88eb8c92708f8038647a8",
+      "bodyTextPrefix": "HALCYON OPS STRATEGIC OPERATIONS SIMULATOR One cruiser, color-ve",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Halcyon Ops",
+      "hasCanvas": true,
+      "bodyTextLen": 412,
+      "bodyTextHash": "8b3235fc820c4079c122703862e3a5bf6e15440b2ce88eb8c92708f8038647a8",
+      "bodyTextPrefix": "HALCYON OPS STRATEGIC OPERATIONS SIMULATOR One cruiser, color-ve",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
