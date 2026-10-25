@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Pause, Volume2, VolumeX } from "lucide-react";
 import { ArcadeAudio } from "@/game/audio";
 import { draw } from "@/game/draw";
-import { createSim, startGame, step } from "@/game/sim";
+import { createSim, startGame, step, syncWings } from "@/game/sim";
 import { formatScore, type Input, type Sim } from "@/game/types";
+import { WingLink, type NetLink, type NetStatus } from "@/components/wing-link";
 
 type Phase = Sim["phase"];
 
@@ -26,6 +27,15 @@ export function HalcyonOps() {
   const [best, setBest] = useState(0);
   const [banner, setBanner] = useState("");
   const [muted, setMuted] = useState(false);
+  const [call, setCall] = useState("OPS");
+  const [code, setCode] = useState("");
+  const [link, setLink] = useState<{ room: string; name: string; lead: boolean; code: string } | null>(null);
+  const [netUi, setNetUi] = useState<NetStatus>({ joined: false, peers: [], hostGone: false, selfId: "" });
+  const netRef = useRef<NetLink | null>(null);
+  const onStatus = useCallback((status: NetStatus) => {
+    setNetUi(status);
+    if (status.hostGone) setBanner("LEAD DROPPED");
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -70,10 +80,17 @@ export function HalcyonOps() {
       if (e.code === "Space" || e.code.startsWith("Arrow")) e.preventDefault();
       keys.add(e.code);
       if (e.code === "Escape") {
+        if (netRef.current) return;
         if (sim.phase === "play") sim.phase = "pause";
         else if (sim.phase === "pause") sim.phase = "play";
       }
       if (e.code === "Enter" && (sim.phase === "title" || sim.phase === "over")) {
+        const net = netRef.current;
+        if (net && !net.lead) return;
+        if (net?.lead) {
+          syncWings(sim, net.roster());
+          sim.coop = true;
+        }
         startGame(sim);
         setPhase("play");
         setScore(0);
@@ -143,20 +160,32 @@ export function HalcyonOps() {
     const frame = (now: number) => {
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
-      acc += dt;
-      const input = sample();
-      let first = true;
-      let steps = 0;
-      while (acc >= 1 / 60 && steps < 5) {
-        step(sim, {
-          ...input,
-          lance: first && input.lance,
-          burst: first && input.burst,
-          spin: first ? input.spin : 0,
-        }, 1 / 60);
-        first = false;
-        acc -= 1 / 60;
-        steps += 1;
+      const net = netRef.current;
+      if (net && !net.lead && net.matching()) {
+        const input = sample();
+        net.follow(sim, dt);
+        net.pushInput(input, now);
+      } else {
+        acc += dt;
+        if (net?.lead && sim.phase !== "title") {
+          syncWings(sim, net.roster());
+          net.applyInputs(sim);
+        }
+        const input = sample();
+        let first = true;
+        let steps = 0;
+        while (acc >= 1 / 60 && steps < 5) {
+          step(sim, {
+            ...input,
+            lance: first && input.lance,
+            burst: first && input.burst,
+            spin: first ? input.spin : 0,
+          }, 1 / 60);
+          first = false;
+          acc -= 1 / 60;
+          steps += 1;
+        }
+        if (net?.lead) net.publish(sim, sim.events.slice(), now);
       }
       sfx.setWarp(sim.phase === "play" && sim.player.warping && !sfx.muted);
       if (sim.events.length) {
@@ -206,15 +235,32 @@ export function HalcyonOps() {
     };
   }, []);
 
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("halcyon-ops-call");
+      if (saved) setCall(saved.slice(0, 12));
+    } catch {
+      /* private mode */
+    }
+    setCode(makeCode());
+  }, []);
+
   const begin = (button?: HTMLButtonElement) => {
     button?.blur();
     sfxRef.current?.unlock();
     const sim = simRef.current;
     if (!sim) return;
     if (sim.phase === "pause") {
+      if (netRef.current) return;
       sim.phase = "play";
       setPhase("play");
       return;
+    }
+    const net = netRef.current;
+    if (net && !net.lead) return;
+    if (net?.lead) {
+      syncWings(sim, net.roster());
+      sim.coop = true;
     }
     startGame(sim);
     setPhase("play");
@@ -222,9 +268,51 @@ export function HalcyonOps() {
   };
 
   const playing = phase === "play" || phase === "clear";
+  const waiting = !!(link && !link.lead);
+
+  const openWing = (lead: boolean) => {
+    const clean = code.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+    if (clean.length < 4) return;
+    const name = (call.trim() || "OPS").toUpperCase().replace(/[^A-Z0-9 _-]/g, "").slice(0, 12) || "OPS";
+    try {
+      localStorage.setItem("halcyon-ops-call", name);
+    } catch {
+      /* private mode */
+    }
+    setLink({ room: `w${clean}`, name, lead, code: clean });
+  };
+
+  const leaveWing = () => {
+    const wasLead = link?.lead;
+    setLink(null);
+    const sim = simRef.current;
+    if (!sim) return;
+    if (wasLead) {
+      sim.coop = false;
+      sim.wings = [];
+    } else {
+      const bestScore = sim.best;
+      const fresh = createSim();
+      fresh.best = bestScore;
+      Object.assign(sim, fresh);
+      setPhase("title");
+      setScore(0);
+    }
+  };
 
   return (
     <main className="cabinet">
+      {link ? (
+        <WingLink
+          key={`${link.room}:${link.lead}:${link.name}`}
+          room={link.room}
+          name={link.name}
+          lead={link.lead}
+          netRef={netRef}
+          simRef={simRef}
+          onStatus={onStatus}
+        />
+      ) : null}
       <div className="stage">
         <canvas
           ref={canvasRef}
@@ -262,6 +350,11 @@ export function HalcyonOps() {
             node.__drag = undefined;
           }}
         />
+        {playing && link ? (
+          <p className="wing-pill">
+            {link.lead ? "LEAD" : "WING"} {link.code} · {1 + netUi.peers.filter((peer) => peer.connectionState === "connected").length}
+          </p>
+        ) : null}
         <p className="sr-only" aria-live="polite">
           {banner}
         </p>
@@ -273,12 +366,16 @@ export function HalcyonOps() {
               {phase === "over" ? (
                 <>
                   <p className="blurb">
-                    Hull lost in {banner || "the sector"}. Score {formatScore(score)}. One cruiser is all
-                    you get — dock sooner, spend the burst, save the warp for the knife-fight.
+                    Hull lost in {banner || "the sector"}. Score {formatScore(score)}.
+                    {link && !link.lead
+                      ? " The lead can launch the wing again."
+                      : " Dock sooner, spend the burst, save the warp for the knife-fight."}
                   </p>
-                  <button type="button" className="engage" onClick={(e) => begin(e.currentTarget)}>
-                    Start
-                  </button>
+                  {link && !link.lead ? null : (
+                    <button type="button" className="engage" onClick={(e) => begin(e.currentTarget)}>
+                      {link?.lead ? "Launch wing" : "Start"}
+                    </button>
+                  )}
                 </>
               ) : phase === "pause" ? (
                 <>
@@ -290,37 +387,78 @@ export function HalcyonOps() {
               ) : (
                 <>
                   <p className="blurb">
-                    One cruiser, color-vector sectors. Red blips raid the anchors. Violet hunts you.
-                    Cyan saucers pulse. Amber relics lay mines. Dock an anchor once to rearm.
+                    {netUi.hostGone
+                      ? "The wing lead dropped. Open the channel again, or fly the sector alone."
+                      : "Share a wing code with one to three other cruisers, or start alone. The host launches. Everyone flies the same sector."}
                   </p>
-                  <div className="keys">
-                    <div>
-                      <b>A / D</b> or drag — heading
-                    </div>
-                    <div>
-                      <b>W</b> — impulse, hold
-                    </div>
-                    <div>
-                      <b>Shift</b> — warp, untouchable while it lasts
-                    </div>
-                    <div>
-                      <b>Space</b> or click — lance, one target
-                    </div>
-                    <div>
-                      <b>F</b> — burst shell, then it blooms
-                    </div>
+                  <p className="keysline">A/D turn · W impulse · Shift warp · Space lance · F burst</p>
+                  <p className="blurb">Shields, then shells, then warp. The wing shares one score.</p>
+                  {waiting ? (
+                    <p className="blurb">Channel {link?.code} is open. The lead launches. You fly as soon as the sector starts.</p>
+                  ) : (
+                    <button type="button" className="engage" onClick={(e) => begin(e.currentTarget)}>
+                      {link?.lead ? "Launch wing" : "Start"}
+                    </button>
+                  )}
+                  <div className="wing">
+                    <label>
+                      Callsign
+                      <input
+                        value={call}
+                        maxLength={12}
+                        autoCapitalize="characters"
+                        disabled={!!link}
+                        onChange={(e) => setCall(e.target.value.toUpperCase())}
+                      />
+                    </label>
+                    <label>
+                      Wing code
+                      <input
+                        value={code}
+                        maxLength={4}
+                        autoCapitalize="characters"
+                        spellCheck={false}
+                        disabled={!!link}
+                        onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4))}
+                      />
+                    </label>
+                    {link ? (
+                      <>
+                        <p className="best">
+                          {netUi.joined ? "CHANNEL OPEN" : "LINKING"} · {link.code}
+                          {link.lead ? " · YOU LEAD" : " · JOINED"}
+                        </p>
+                        <ul className="roster">
+                          <li className="ok">You · {link.name}</li>
+                          {netUi.peers.map((peer) => (
+                            <li key={peer.id} className={peer.connectionState === "connected" ? "ok" : peer.connectionState === "failed" ? "bad" : ""}>
+                              {(peer.name || "WING").slice(0, 12)} · {peer.connectionState}
+                              {typeof peer.rttMs === "number" ? ` · ${peer.rttMs}ms` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                        <button type="button" className="leave" onClick={leaveWing}>
+                          Leave channel
+                        </button>
+                      </>
+                    ) : (
+                      <div className="wing-actions">
+                        <button type="button" className="engage ghost" disabled={code.length < 4} onClick={() => openWing(true)}>
+                          Host
+                        </button>
+                        <button type="button" className="engage ghost" disabled={code.length < 4} onClick={() => openWing(false)}>
+                          Join
+                        </button>
+                      </div>
+                    )}
                   </div>
-                  <p className="blurb">Damage order: shields, then shells, then warp.</p>
-                  <button type="button" className="engage" onClick={(e) => begin(e.currentTarget)}>
-                    Start
-                  </button>
                 </>
               )}
               <p className="best">BEST {formatScore(best)}</p>
             </section>
           </div>
         ) : null}
-        {playing ? (
+        {playing && !link ? (
           <button
             type="button"
             className="icon-btn pause"
@@ -382,6 +520,13 @@ export function HalcyonOps() {
       </div>
     </main>
   );
+}
+
+function makeCode(): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 4; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return code;
 }
 
 function bagOf(canvas: HTMLCanvasElement | null): TouchState | undefined {

@@ -8,6 +8,7 @@ import {
   type Kind,
   type Player,
   type Sim,
+  type Wing,
 } from "./types";
 
 const BEST_KEY = "halcyon-ops-best";
@@ -159,6 +160,78 @@ function freshPlayer(): Player {
   };
 }
 
+export function idleInput(): Input {
+  return { steer: 0, impulse: false, warp: false, lance: false, burst: false, spin: 0 };
+}
+
+const SPAWNS = [
+  { x: 0, z: 720 },
+  { x: -180, z: 860 },
+  { x: 180, z: 860 },
+  { x: 0, z: 980 },
+];
+
+function resetShip(ship: Player, x: number, z: number): void {
+  Object.assign(ship, freshPlayer());
+  ship.x = x;
+  ship.z = z;
+  ship.iframe = 1.15;
+}
+
+function placeFleet(sim: Sim): void {
+  sim.localDown = false;
+  resetShip(sim.player, SPAWNS[0].x, SPAWNS[0].z);
+  sim.wings.forEach((wing, i) => {
+    const spot = SPAWNS[(i + 1) % SPAWNS.length];
+    wing.alive = true;
+    wing.input = idleInput();
+    resetShip(wing.ship, spot.x, spot.z);
+  });
+}
+
+export function syncWings(sim: Sim, roster: { id: string; name: string }[]): void {
+  sim.coop = true;
+  const kept = new Map(sim.wings.map((wing) => [wing.id, wing]));
+  const next: Wing[] = [];
+  for (const peer of roster.slice(0, 3)) {
+    const prev = kept.get(peer.id);
+    if (prev) {
+      prev.name = peer.name || prev.name;
+      next.push(prev);
+      continue;
+    }
+    const ship = freshPlayer();
+    if (sim.phase === "play" || sim.phase === "clear" || sim.phase === "pause") {
+      ship.x = sim.player.x + 140;
+      ship.z = sim.player.z + 90;
+      ship.iframe = 2;
+    }
+    next.push({
+      id: peer.id,
+      name: peer.name || "WING",
+      color: wingColor(peer.id),
+      alive: true,
+      ship,
+      input: idleInput(),
+    });
+  }
+  sim.wings = next;
+  if (sim.coop && sim.phase === "play" && sim.localDown && sim.wings.length === 0) {
+    sim.phase = "over";
+    sim.banner = "WING LOST";
+    sim.bannerSub = "NO CRUISERS LEFT";
+    sim.bannerT = 3;
+    noteScore(sim);
+  }
+}
+
+export function wingColor(id: string): string {
+  const palette = ["#7ec8ff", "#ffb020", "#ff6b8a", "#d2a6ff"];
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 33 + id.charCodeAt(i)) >>> 0;
+  return palette[hash % palette.length];
+}
+
 function mk(sim: Sim, kind: Kind, x: number, z: number, extra: Partial<Ent> = {}): Ent {
   const combat = (STAT as Partial<Record<Kind, Stat>>)[kind];
   return {
@@ -210,7 +283,7 @@ function spawnRim(sim: Sim, kind: Kind): void {
     const rad = 980 + sim.rng() * 130;
     const x = Math.cos(a) * rad;
     const z = Math.sin(a) * rad;
-    if (Math.hypot(x - sim.player.x, z - sim.player.z) < 300) continue;
+    if (fleetNear(sim, x, z, 300)) continue;
     let blocked = false;
     for (const e of sim.ents) {
       if (Math.hypot(e.x - x, e.z - z) < 90) {
@@ -246,14 +319,7 @@ export function beginSector(sim: Sim, index: number): void {
   sim.ents = [];
   sim.beams = [];
   sim.blooms = [];
-  sim.player.x = 0;
-  sim.player.z = 720;
-  sim.player.yaw = 0;
-  sim.player.speed = 0;
-  sim.player.dockT = 0;
-  sim.player.warping = false;
-  sim.player.iframe = 1.15;
-  sim.player.lockId = -1;
+  placeFleet(sim);
   const spots = [
     { x: 0, z: -480 },
     { x: 540, z: 60 },
@@ -298,6 +364,9 @@ export function createSim(): Sim {
     events: [],
     nextId: 1,
     rng: mulberry32(42),
+    wings: [],
+    coop: false,
+    localDown: false,
   };
   sim.player.z = 560;
   const decor: [Kind, number, number][] = [
@@ -324,6 +393,12 @@ export function createSim(): Sim {
 export function startGame(sim: Sim): void {
   sim.score = 0;
   sim.player = freshPlayer();
+  sim.localDown = false;
+  for (const wing of sim.wings) {
+    wing.alive = true;
+    wing.ship = freshPlayer();
+    wing.input = idleInput();
+  }
   sim.sparks = [];
   sim.pops = [];
   sim.shake = 0;
@@ -335,11 +410,13 @@ export function startGame(sim: Sim): void {
 function decayFx(sim: Sim, dt: number): void {
   sim.bannerT = Math.max(0, sim.bannerT - dt);
   sim.hintT = Math.max(0, sim.hintT - dt);
-  const p = sim.player;
-  p.hurtT = Math.max(0, p.hurtT - dt);
-  p.iframe = Math.max(0, p.iframe - dt);
-  p.lanceCd = Math.max(0, p.lanceCd - dt);
-  p.shellCd = Math.max(0, p.shellCd - dt);
+  const ships = [sim.player, ...sim.wings.map((wing) => wing.ship)];
+  for (const p of ships) {
+    p.hurtT = Math.max(0, p.hurtT - dt);
+    p.iframe = Math.max(0, p.iframe - dt);
+    p.lanceCd = Math.max(0, p.lanceCd - dt);
+    p.shellCd = Math.max(0, p.shellCd - dt);
+  }
   sim.shake = Math.max(0, sim.shake - dt * 30);
   for (const e of sim.ents) if (e.flash > 0) e.flash = Math.max(0, e.flash - dt);
   for (const b of sim.beams) b.life -= dt;
@@ -452,34 +529,85 @@ function sparks(sim: Sim, x: number, y: number, z: number, color: string, n: num
   }
 }
 
-function safePlayer(sim: Sim): boolean {
-  const p = sim.player;
-  return p.warping || p.dockT > 0 || p.iframe > 0 || sim.phase !== "play";
+function fleetNear(sim: Sim, x: number, z: number, rad: number): boolean {
+  if (Math.hypot(x - sim.player.x, z - sim.player.z) < rad) return true;
+  for (const wing of sim.wings) {
+    if (Math.hypot(x - wing.ship.x, z - wing.ship.z) < rad) return true;
+  }
+  return false;
 }
 
-function hurtPlayer(sim: Sim): void {
-  if (safePlayer(sim)) return;
-  const p = sim.player;
-  p.iframe = 0.72;
-  p.hurtT = 0.38;
+function livingShips(sim: Sim): { ship: Player; wing: Wing | null }[] {
+  const list: { ship: Player; wing: Wing | null }[] = [];
+  if (!sim.localDown) list.push({ ship: sim.player, wing: null });
+  for (const wing of sim.wings) if (wing.alive) list.push({ ship: wing.ship, wing });
+  return list;
+}
+
+function nearestLiving(sim: Sim, x: number, z: number): { ship: Player; wing: Wing | null } | null {
+  let best: { ship: Player; wing: Wing | null } | null = null;
+  let bestD = 1e12;
+  for (const slot of livingShips(sim)) {
+    const d = (slot.ship.x - x) ** 2 + (slot.ship.z - z) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = slot;
+    }
+  }
+  return best;
+}
+
+function safeShip(ship: Player, sim: Sim): boolean {
+  return ship.warping || ship.dockT > 0 || ship.iframe > 0 || sim.phase !== "play";
+}
+
+function wipeFleet(sim: Sim): void {
+  const stillUp = !sim.localDown || sim.wings.some((wing) => wing.alive);
+  if (stillUp && !(sim.localDown && sim.wings.every((wing) => !wing.alive))) return;
+  sim.phase = "over";
+  sim.banner = sim.coop ? "WING LOST" : "HULL LOST";
+  sim.bannerSub = sim.coop ? "NO CRUISERS LEFT" : "ONE CRUISER";
+  sim.bannerT = 3;
+  noteScore(sim);
+}
+
+function hurtShip(sim: Sim, ship: Player, wing: Wing | null): void {
+  if (safeShip(ship, sim)) return;
+  ship.iframe = 0.72;
+  ship.hurtT = 0.38;
   sim.shake = Math.min(16, sim.shake + 10);
   sim.hitstop = Math.max(sim.hitstop, 0.04);
-  if (p.shields > 0) p.shields -= 1;
-  else if (p.shells > 0) p.shells -= 1;
-  else if (p.warp > 0) p.warp = Math.max(0, p.warp - 28);
+  if (ship.shields > 0) ship.shields -= 1;
+  else if (ship.shells > 0) ship.shells -= 1;
+  else if (ship.warp > 0) ship.warp = Math.max(0, ship.warp - 28);
   else {
-    p.speed = 0;
-    p.warping = false;
-    sim.phase = "over";
-    sim.banner = "HULL LOST";
-    sim.bannerSub = "ONE CRUISER";
-    sim.bannerT = 3;
-    sparks(sim, p.x, 18, p.z, "#ff4d5a", 18);
-    noteScore(sim);
+    ship.speed = 0;
+    ship.warping = false;
+    sparks(sim, ship.x, 18, ship.z, "#ff4d5a", 18);
     sim.events.push("die");
+    if (wing) {
+      wing.alive = false;
+      sim.banner = "WING DOWN";
+      sim.bannerSub = wing.name;
+      sim.bannerT = 1.3;
+    } else if (sim.coop && sim.wings.some((item) => item.alive)) {
+      sim.localDown = true;
+      sim.banner = "CRUISER LOST";
+      sim.bannerSub = "WING STILL UP";
+      sim.bannerT = 2;
+    } else {
+      sim.localDown = true;
+      sim.phase = "over";
+      sim.banner = "HULL LOST";
+      sim.bannerSub = "ONE CRUISER";
+      sim.bannerT = 3;
+      noteScore(sim);
+      return;
+    }
+    wipeFleet(sim);
     return;
   }
-  sparks(sim, p.x, 18, p.z, "#ffb020", 8);
+  sparks(sim, ship.x, 18, ship.z, "#ffb020", 8);
   sim.events.push("hurt");
 }
 
@@ -556,7 +684,8 @@ function tryShoot(sim: Sim, ent: Ent, tx: number, tz: number, range: number, cd:
 
 function updateEnemy(sim: Sim, ent: Ent, dt: number): void {
   const stat = (STAT as Partial<Record<Kind, Stat>>)[ent.kind];
-  const p = sim.player;
+  const hunted = nearestLiving(sim, ent.x, ent.z);
+  const p = hunted?.ship ?? sim.player;
   if (ent.kind === "asteroid") {
     ent.x += ent.vx * dt;
     ent.z += ent.vz * dt;
@@ -574,8 +703,10 @@ function updateEnemy(sim: Sim, ent: Ent, dt: number): void {
     if (ent.cd <= 0) {
       ent.cd = (stat?.cd ?? 2.3) / sim.speedMul;
       sim.blooms.push({ x: ent.x, z: ent.z, life: 0.35, max: stat?.range ?? 200, color: "#49e7ff" });
-      if (Math.hypot(p.x - ent.x, p.z - ent.z) < (stat?.range ?? 200) && !safePlayer(sim)) {
-        hurtPlayer(sim);
+      for (const slot of livingShips(sim)) {
+        if (Math.hypot(slot.ship.x - ent.x, slot.ship.z - ent.z) < (stat?.range ?? 200)) {
+          hurtShip(sim, slot.ship, slot.wing);
+        }
       }
       sim.events.push("ping");
     }
@@ -661,15 +792,14 @@ function separate(sim: Sim, dt: number): void {
   }
 }
 
-function acquire(sim: Sim): Ent | null {
-  const p = sim.player;
-  const { fx, fz, rx, rz } = fwd(p.yaw);
+function acquire(sim: Sim, ship: Player): Ent | null {
+  const { fx, fz, rx, rz } = fwd(ship.yaw);
   let best: Ent | null = null;
   let bestAng = 99;
   for (const e of sim.ents) {
     if (!e.alive || !BLASTABLE[e.kind]) continue;
-    const dx = e.x - p.x;
-    const dz = e.z - p.z;
+    const dx = e.x - ship.x;
+    const dz = e.z - ship.z;
     const dist = Math.hypot(dx, dz);
     if (dist < 28 || dist > 560) continue;
     const forward = dx * fx + dz * fz;
@@ -719,7 +849,6 @@ function detonate(sim: Sim, x: number, z: number): void {
 }
 
 function moveProjectiles(sim: Sim, dt: number): void {
-  const p = sim.player;
   for (const s of sim.ents) {
     if (!s.alive) continue;
     if (s.kind === "shot") {
@@ -734,11 +863,16 @@ function moveProjectiles(sim: Sim, dt: number): void {
         s.alive = false;
         continue;
       }
-      if (Math.hypot(s.x - p.x, s.z - p.z) < p.r + 4) {
-        s.alive = false;
-        hurtPlayer(sim);
-        continue;
+      let hitShip = false;
+      for (const slot of livingShips(sim)) {
+        if (Math.hypot(s.x - slot.ship.x, s.z - slot.ship.z) < slot.ship.r + 4) {
+          s.alive = false;
+          hurtShip(sim, slot.ship, slot.wing);
+          hitShip = true;
+          break;
+        }
       }
+      if (hitShip) continue;
       for (const st of sim.ents) {
         if (st.kind !== "station" || !st.alive) continue;
         if (Math.hypot(s.x - st.x, s.z - st.z) < st.r) {
@@ -773,34 +907,41 @@ function moveProjectiles(sim: Sim, dt: number): void {
         s.alive = false;
         continue;
       }
-      if (s.arm <= 0 && Math.hypot(s.x - p.x, s.z - p.z) < 76) {
-        s.alive = false;
-        sim.blooms.push({ x: s.x, z: s.z, life: 0.3, max: 90, color: "#ffd25a" });
-        hurtPlayer(sim);
+      if (s.arm <= 0) {
+        for (const slot of livingShips(sim)) {
+          if (Math.hypot(s.x - slot.ship.x, s.z - slot.ship.z) < 76) {
+            s.alive = false;
+            sim.blooms.push({ x: s.x, z: s.z, life: 0.3, max: 90, color: "#ffd25a" });
+            hurtShip(sim, slot.ship, slot.wing);
+            break;
+          }
+        }
       }
     }
   }
 }
 
 function ram(sim: Sim): void {
-  const p = sim.player;
-  if (safePlayer(sim)) return;
-  for (const e of sim.ents) {
-    if (!e.alive) continue;
-    if (
-      e.kind !== "raider" &&
-      e.kind !== "hunter" &&
-      e.kind !== "dart" &&
-      e.kind !== "saucer" &&
-      e.kind !== "asteroid" &&
-      e.kind !== "relic"
-    ) {
-      continue;
-    }
-    if (Math.hypot(e.x - p.x, e.z - p.z) < e.r * 0.72 + p.r * 0.55) {
-      hurtPlayer(sim);
-      if (e.kind === "asteroid") hurtEnt(sim, e, 99);
-      break;
+  for (const slot of livingShips(sim)) {
+    const p = slot.ship;
+    if (safeShip(p, sim)) continue;
+    for (const e of sim.ents) {
+      if (!e.alive) continue;
+      if (
+        e.kind !== "raider" &&
+        e.kind !== "hunter" &&
+        e.kind !== "dart" &&
+        e.kind !== "saucer" &&
+        e.kind !== "asteroid" &&
+        e.kind !== "relic"
+      ) {
+        continue;
+      }
+      if (Math.hypot(e.x - p.x, e.z - p.z) < e.r * 0.72 + p.r * 0.55) {
+        hurtShip(sim, p, slot.wing);
+        if (e.kind === "asteroid") hurtEnt(sim, e, 99);
+        break;
+      }
     }
   }
 }
@@ -819,38 +960,17 @@ function clearIfDone(sim: Sim): void {
   sim.clearT = 2.55;
   sim.player.speed = 0;
   sim.player.warping = false;
+  for (const wing of sim.wings) {
+    wing.ship.speed = 0;
+    wing.ship.warping = false;
+  }
   sim.banner = "SECTOR CLEAR";
   sim.bannerSub = `BONUS ${bonus}`;
   sim.bannerT = 2.55;
   sim.events.push("clear");
 }
 
-export function step(sim: Sim, input: Input, dt: number): void {
-  sim.t += dt;
-  if (sim.phase === "title") {
-    stepTitle(sim, dt);
-    decayFx(sim, dt);
-    return;
-  }
-  if (sim.phase === "pause" || sim.phase === "over") {
-    decayFx(sim, dt);
-    return;
-  }
-  if (sim.phase === "clear") {
-    sim.clearT -= dt;
-    decayFx(sim, dt);
-    if (sim.clearT <= 0) beginSector(sim, sim.sector + 1);
-    return;
-  }
-  if (sim.hitstop > 0) {
-    sim.hitstop -= dt;
-    decayFx(sim, dt);
-    return;
-  }
-
-  const p = sim.player;
-  for (const e of sim.ents) if (e.intro > 0) e.intro = Math.max(0, e.intro - dt);
-
+function pilot(sim: Sim, p: Player, input: Input, dt: number): void {
   const wantWarp = input.warp && p.warp > 0 && p.dockT <= 0;
   const x0 = p.x;
   const z0 = p.z;
@@ -896,7 +1016,7 @@ export function step(sim: Sim, input: Input, dt: number): void {
   }
 
   const { fx, fz } = fwd(p.yaw);
-  const locked = acquire(sim);
+  const locked = acquire(sim, p);
   p.lockId = locked ? locked.id : -1;
 
   if (p.dockT <= 0 && input.lance && p.lanceCd <= 0) {
@@ -943,6 +1063,45 @@ export function step(sim: Sim, input: Input, dt: number): void {
       p.shellCd = 0.18;
       sim.events.push("dry");
     }
+  }
+}
+
+export function step(sim: Sim, input: Input, dt: number): void {
+  sim.t += dt;
+  if (sim.phase === "title") {
+    stepTitle(sim, dt);
+    decayFx(sim, dt);
+    return;
+  }
+  if (sim.phase === "pause" || sim.phase === "over") {
+    decayFx(sim, dt);
+    return;
+  }
+  if (sim.phase === "clear") {
+    sim.clearT -= dt;
+    decayFx(sim, dt);
+    if (sim.clearT <= 0) beginSector(sim, sim.sector + 1);
+    return;
+  }
+  if (sim.hitstop > 0) {
+    sim.hitstop -= dt;
+    decayFx(sim, dt);
+    return;
+  }
+
+  for (const e of sim.ents) if (e.intro > 0) e.intro = Math.max(0, e.intro - dt);
+
+  if (!sim.localDown) pilot(sim, sim.player, input, dt);
+  else {
+    sim.player.speed = 0;
+    sim.player.warping = false;
+  }
+  for (const wing of sim.wings) {
+    if (!wing.alive) continue;
+    pilot(sim, wing.ship, wing.input, dt);
+    wing.input.lance = false;
+    wing.input.burst = false;
+    wing.input.spin = 0;
   }
 
   const count = sim.ents.length;

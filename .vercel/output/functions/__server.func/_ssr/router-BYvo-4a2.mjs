@@ -1,11 +1,20 @@
-import { i as __toESM, n as __exportAll } from "../_runtime.mjs";
+import { o as __toESM } from "../_runtime.mjs";
 import { K as require_react, _ as createFileRoute, b as require_jsx_runtime, d as Scripts, f as HeadContent, g as lazyRouteComponent, h as Outlet, m as createRouter, v as createRootRoute, y as useRouter } from "../_libs/@tanstack/react-router+[...].mjs";
 import { r as TriangleAlert } from "../_libs/lucide-react.mjs";
-import { a as union, i as string, n as number, r as object, t as literal } from "../_libs/zod.mjs";
-//#region node_modules/.nitro/vite/services/ssr/assets/router-BnTjvbo0.js
-var router_BnTjvbo0_exports = /* @__PURE__ */ __exportAll({ getRouter: () => getRouter });
+import { a as number, c as union, i as literal, l as unknown, n as _enum, o as object, r as discriminatedUnion, s as string, t as number$1 } from "../_libs/zod.mjs";
+//#region node_modules/.nitro/vite/services/ssr/assets/router-BYvo-4a2.js
 var import_react = /* @__PURE__ */ __toESM(require_react());
 var import_jsx_runtime = require_jsx_runtime();
+var __defProp = Object.defineProperty;
+var __exportAll = (all, no_symbols) => {
+	let target = {};
+	for (var name in all) __defProp(target, name, {
+		get: all[name],
+		enumerable: true
+	});
+	if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
+	return target;
+};
 var FALLBACK_MESSAGE = "An unexpected error occurred. Try reloading the page.";
 function errorMessage(error) {
 	if (error instanceof Error && error.message) return error.message;
@@ -331,9 +340,9 @@ function PreviewHostBridge() {
 	}, [router]);
 	return null;
 }
-var styles_default = "/assets/styles-DSVwo3cJ.css";
+var styles_default = "/assets/styles-DxPKcTP9.css";
 var APP_NAME = "Halcyon Ops";
-var Route$1 = createRootRoute({
+var Route$2 = createRootRoute({
 	head: () => ({
 		meta: [
 			{ charSet: "utf-8" },
@@ -381,13 +390,349 @@ var Route$1 = createRootRoute({
 		] })]
 	})
 });
-var $$splitComponentImporter = () => import("./routes-CED1fPGp.mjs");
-var rootRouteChildren = { IndexRoute: createFileRoute("/")({ component: lazyRouteComponent($$splitComponentImporter, "component") }).update({
-	id: "/",
-	path: "/",
-	getParentRoute: () => Route$1
-}) };
-var routeTree = Route$1._addFileChildren(rootRouteChildren)._addFileTypes();
+var $$splitComponentImporter = () => import("./routes-Co4Bq_bE.mjs");
+var Route$1 = createFileRoute("/")({ component: lazyRouteComponent($$splitComponentImporter, "component") });
+/**
+* Migration bookkeeping shared by the two appliers — `scripts/migrate.mjs`
+* (deploy, `readdir`) and `src/lib/db.ts` (PGLite preview, `import.meta.glob`).
+*
+* Applied files are keyed by BASENAME, so the same file applies once no matter
+* which directory it is globbed from. That is what makes the auth schema safe to
+* copy from `migrations/auth/` into `migrations/` when an app turns sign-in on:
+* a database that already has `0001_auth.sql` will not re-run it.
+*
+* Neither applier descends into subdirectories, so `migrations/auth/*.sql` is
+* out of scope for both until it is copied up.
+*/
+/**
+* The `_migrations` key for a migration path (or bare filename).
+* @param {string} path
+* @returns {string}
+*/
+function migrationName(path) {
+	return path.split("/").pop() ?? path;
+}
+/**
+* @param {string} path
+* @returns {boolean}
+*/
+function isMigrationFile(path) {
+	return path.endsWith(".sql");
+}
+/**
+* Migrations in `paths` that are not yet in `applied`, in apply order.
+* Non-`.sql` entries (a `readdir` also yields `migrations/auth/`) are dropped.
+* @param {Iterable<string>} paths
+* @param {Iterable<string>} applied
+* @returns {Array<{ name: string, path: string }>}
+*/
+function pendingMigrations(paths, applied) {
+	const done = new Set(applied);
+	return [...paths].filter(isMigrationFile).map((path) => ({
+		name: migrationName(path),
+		path
+	})).sort((a, b) => a.name.localeCompare(b.name)).filter(({ name }) => !done.has(name));
+}
+var rawDatabaseUrl = typeof process !== "undefined" ? process.env.DATABASE_URL : void 0;
+var databaseUrl = rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl : void 0;
+/**
+* Active backend: real **Neon** when `DATABASE_URL` is set (deployed / configured
+* sandbox), otherwise a local embedded **PGLite** (Postgres compiled to WASM) so
+* the app has a working database even with nothing configured — the live preview
+* included. Swap in Neon later by just setting `DATABASE_URL`; no code changes.
+*/
+var dbSource = databaseUrl ? "neon" : "pglite";
+/**
+* Init state lives on globalThis as promises: dev HMR creates new instances of
+* this module, and two instances racing module-level state would open a second
+* pool or run two concurrent PGLite migration passes (whose duplicate
+* `_migrations` insert rejects — and would get memoized, poisoning every later
+* `getSql()`). A failed init clears its slot so the next call retries.
+*/
+var globalRef$1 = globalThis;
+/**
+* Result-type parity: Postgres sends every value as text plus a type OID — the
+* JS value is the DRIVER's parsing choice, and pg and PGLite disagree (pg:
+* int8 -> string, date -> local-midnight Date; PGLite: int8 -> BigInt, which
+* JSON.stringify rejects, date -> UTC Date). Normalize both so preview and
+* production return identical, JSON-safe shapes:
+*   int8/bigint (incl. count(*)) -> number (past 2^53 loses precision — cast
+*                                   `::text` if you ever need huge integers)
+*   date                         -> 'YYYY-MM-DD' string
+*   interval                     -> Postgres interval text
+* numeric already comes back as a string on both (arbitrary precision).
+*/
+var OID_INT8 = 20;
+var OID_DATE = 1082;
+var OID_INTERVAL = 1186;
+var identity = (v) => v;
+/** Wrap a query runner in the tagged-template + `.query()` `Sql` surface. */
+function toSql(run) {
+	const sql = (async (strings, ...values) => {
+		let text = strings[0];
+		for (let i = 0; i < values.length; i += 1) text += `$${i + 1}${strings[i + 1]}`;
+		return run(text, values);
+	});
+	sql.query = (text, params = []) => run(text, params);
+	return sql;
+}
+function createNeonSql() {
+	globalRef$1.__pgSqlPromise__ ??= (async () => {
+		const { Pool, types } = await import("../_libs/pg.mjs").then((n) => n.t);
+		types.setTypeParser(OID_INT8, Number);
+		types.setTypeParser(OID_DATE, identity);
+		types.setTypeParser(OID_INTERVAL, identity);
+		const pool = new Pool({ connectionString: databaseUrl });
+		return toSql(async (text, params) => {
+			return (await pool.query(text, params)).rows;
+		});
+	})().catch((err) => {
+		globalRef$1.__pgSqlPromise__ = void 0;
+		throw err;
+	});
+	return globalRef$1.__pgSqlPromise__;
+}
+async function createPgliteSql() {
+	globalRef$1.__pgliteInstance__ ??= (async () => {
+		const { PGlite } = await import("../_libs/electric-sql__pglite.mjs").then((n) => n.t);
+		const pg = new PGlite({ parsers: {
+			[OID_INT8]: Number,
+			[OID_DATE]: identity,
+			[OID_INTERVAL]: identity
+		} });
+		await pg.waitReady;
+		await pg.exec("create table if not exists _migrations (name text primary key, applied_at timestamptz not null default now())");
+		return pg;
+	})().catch((err) => {
+		globalRef$1.__pgliteInstance__ = void 0;
+		throw err;
+	});
+	const pg = await globalRef$1.__pgliteInstance__;
+	const migrate = async () => {
+		const migrations = /* #__PURE__ */ Object.assign({});
+		const done = (await pg.query("select name from _migrations")).rows.map((r) => r.name);
+		for (const { name, path } of pendingMigrations(Object.keys(migrations), done)) await pg.transaction(async (tx) => {
+			await tx.exec(migrations[path]);
+			await tx.query("insert into _migrations (name) values ($1)", [name]);
+		});
+	};
+	const pass = (globalRef$1.__pgliteMigrateChain__ ?? Promise.resolve()).catch(() => void 0).then(migrate);
+	globalRef$1.__pgliteMigrateChain__ = pass;
+	await pass;
+	return toSql(async (text, params) => {
+		return (await pg.query(text, params)).rows;
+	});
+}
+var sqlPromise = null;
+async function createSql() {
+	if (typeof window !== "undefined") throw new Error("@/lib/db is server-only — call getSql() from a createServerFn handler or a server route loader, never from client code.");
+	return dbSource === "neon" ? createNeonSql() : createPgliteSql();
+}
+/**
+* Get the shared, **server-only** SQL client. Neon when `DATABASE_URL` is set,
+* otherwise the local PGLite fallback. Memoized — safe to call per request.
+*
+* Schema comes from `migrations/*.sql`, auto-applied before the first query on
+* both backends — define tables there, never inline in server functions.
+*/
+function getSql() {
+	sqlPromise ??= createSql().catch((err) => {
+		sqlPromise = null;
+		throw err;
+	});
+	return sqlPromise;
+}
+/**
+* Finish DB bootstrap before the server handles traffic.
+*
+* - **PGLite** (preview / no `DATABASE_URL`): open the in-memory DB and apply
+*   `migrations/*.sql`. Idempotent — concurrent callers share one promise.
+* - **Neon**: no-op (pool is created lazily on first query).
+*
+* Vite `configureServer` awaits this at dev startup; production imports of this
+* module kick it off immediately (see bottom of file).
+*/
+function ensureDbReady() {
+	if (dbSource !== "pglite") return Promise.resolve();
+	return getSql().then(() => void 0);
+}
+var globalBoot = globalThis;
+if (typeof window === "undefined" && dbSource === "pglite") globalBoot.__pgBootstrapPromise__ ??= ensureDbReady().catch((err) => {
+	globalBoot.__pgBootstrapPromise__ = void 0;
+	console.error("[db] PGLite bootstrap failed:", err);
+	throw err;
+});
+/**
+* WebRTC signaling over the app database (Neon deployed, PGLite in preview).
+* Only rendezvous traffic passes through here — roster + SDP/ICE relay while a
+* mesh forms; game data then flows peer-to-peer. DB-backed so any serverless
+* instance can serve any poll. Mount at /api/rtc.
+*/
+var ID = string().regex(/^[a-zA-Z0-9_-]{1,64}$/);
+var signalSchema = object({
+	op: literal("signal"),
+	room: ID,
+	from: ID,
+	to: ID,
+	kind: _enum([
+		"offer",
+		"answer",
+		"ice"
+	]),
+	payload: unknown().refine((v) => v !== void 0 && JSON.stringify(v).length <= 32768, { message: "payload too large" })
+});
+var leaveSchema = object({
+	op: literal("leave"),
+	room: ID,
+	peer: ID
+});
+var postSchema = discriminatedUnion("op", [signalSchema, leaveSchema]);
+var PEER_TTL_SECONDS = 30;
+var SIGNAL_TTL_SECONDS = 60;
+var globalRef = globalThis;
+function ensureSchema(sql) {
+	globalRef.__rtcSchemaPromise__ ??= (async () => {
+		await sql.query(`CREATE TABLE IF NOT EXISTS webrtc_peers (
+         room TEXT NOT NULL,
+         peer_id TEXT NOT NULL,
+         name TEXT NOT NULL DEFAULT '',
+         last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+         PRIMARY KEY (room, peer_id)
+       )`);
+		await sql.query(`CREATE TABLE IF NOT EXISTS webrtc_signals (
+         id BIGSERIAL PRIMARY KEY,
+         room TEXT NOT NULL,
+         to_peer TEXT NOT NULL,
+         from_peer TEXT NOT NULL,
+         kind TEXT NOT NULL,
+         payload JSONB NOT NULL,
+         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+       )`);
+		await sql.query(`CREATE INDEX IF NOT EXISTS webrtc_signals_inbox
+         ON webrtc_signals (room, to_peer, id)`);
+	})().catch((err) => {
+		globalRef.__rtcSchemaPromise__ = void 0;
+		throw err;
+	});
+	return globalRef.__rtcSchemaPromise__;
+}
+async function roster(sql, room) {
+	return (await sql.query(`SELECT peer_id, name FROM webrtc_peers
+     WHERE room = $1 AND last_seen > now() - make_interval(secs => $2)
+     ORDER BY peer_id LIMIT 32`, [room, PEER_TTL_SECONDS])).map((r) => ({
+		id: r.peer_id,
+		name: r.name
+	}));
+}
+async function touchPeer(sql, room, peer, name) {
+	await sql.query(`INSERT INTO webrtc_peers (room, peer_id, name, last_seen)
+     VALUES ($1, $2, $3, now())
+     ON CONFLICT (room, peer_id)
+     DO UPDATE SET last_seen = now(), name = EXCLUDED.name`, [
+		room,
+		peer,
+		name
+	]);
+}
+async function prune(sql) {
+	await Promise.all([sql.query(`DELETE FROM webrtc_signals WHERE created_at < now() - make_interval(secs => $1)`, [SIGNAL_TTL_SECONDS]), sql.query(`DELETE FROM webrtc_peers WHERE last_seen < now() - make_interval(secs => $1)`, [PEER_TTL_SECONDS])]);
+}
+function json(body, status = 200) {
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: {
+			"content-type": "application/json",
+			"cache-control": "no-store"
+		}
+	});
+}
+async function handleGet(url) {
+	const parsed = object({
+		room: ID,
+		peer: ID,
+		name: string().max(64).default(""),
+		since: number$1().int().min(0).default(0)
+	}).safeParse({
+		room: url.searchParams.get("room"),
+		peer: url.searchParams.get("peer"),
+		name: url.searchParams.get("name") ?? "",
+		since: url.searchParams.get("since") ?? 0
+	});
+	if (!parsed.success) return json({ error: "invalid query" }, 400);
+	const { room, peer, name, since } = parsed.data;
+	const sql = await getSql();
+	await ensureSchema(sql);
+	if (since === 0 || Math.random() < .02) await prune(sql);
+	await touchPeer(sql, room, peer, name);
+	const rows = await sql.query(`SELECT id, from_peer, kind, payload FROM webrtc_signals
+     WHERE room = $1 AND to_peer = $2 AND id > $3
+     ORDER BY id LIMIT 200`, [
+		room,
+		peer,
+		since
+	]);
+	return json({
+		peers: await roster(sql, room),
+		signals: rows.map((r) => ({
+			id: Number(r.id),
+			from: r.from_peer,
+			kind: r.kind,
+			payload: r.payload
+		}))
+	});
+}
+async function handlePost(request) {
+	let body;
+	try {
+		body = await request.json();
+	} catch {
+		return json({ error: "invalid JSON" }, 400);
+	}
+	const parsed = postSchema.safeParse(body);
+	if (!parsed.success) return json({ error: "invalid request" }, 400);
+	const msg = parsed.data;
+	const sql = await getSql();
+	await ensureSchema(sql);
+	if (msg.op === "signal") await sql.query(`INSERT INTO webrtc_signals (room, to_peer, from_peer, kind, payload)
+       VALUES ($1, $2, $3, $4, $5)`, [
+		msg.room,
+		msg.to,
+		msg.from,
+		msg.kind,
+		JSON.stringify(msg.payload)
+	]);
+	else await sql.query(`DELETE FROM webrtc_peers WHERE room = $1 AND peer_id = $2`, [msg.room, msg.peer]);
+	return json({ ok: true });
+}
+async function handleSignaling(request) {
+	try {
+		if (request.method === "GET") return await handleGet(new URL(request.url));
+		if (request.method === "POST") return await handlePost(request);
+		return json({ error: "method not allowed" }, 405);
+	} catch (error) {
+		console.error("[rtc] signaling error:", error);
+		return json({ error: "signaling failed" }, 500);
+	}
+}
+var handle = ({ request }) => handleSignaling(request);
+var Route = createFileRoute("/api/rtc")({ server: { handlers: {
+	GET: handle,
+	POST: handle
+} } });
+var rootRouteChildren = {
+	IndexRoute: Route$1.update({
+		id: "/",
+		path: "/",
+		getParentRoute: () => Route$2
+	}),
+	ApiRtcRoute: Route.update({
+		id: "/api/rtc",
+		path: "/api/rtc",
+		getParentRoute: () => Route$2
+	})
+};
+var routeTree = Route$2._addFileChildren(rootRouteChildren)._addFileTypes();
+var router_exports = /* @__PURE__ */ __exportAll({ getRouter: () => getRouter });
 function getRouter() {
 	return createRouter({
 		routeTree,
@@ -396,4 +741,4 @@ function getRouter() {
 	});
 }
 //#endregion
-export { getRouter, router_BnTjvbo0_exports as t };
+export { previewPathPrefix as n, router_exports as t };

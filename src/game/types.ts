@@ -89,6 +89,15 @@ export interface Pop {
   life: number;
 }
 
+export interface Wing {
+  id: string;
+  name: string;
+  color: string;
+  alive: boolean;
+  ship: Player;
+  input: Input;
+}
+
 export interface Sim {
   phase: Phase;
   sector: number;
@@ -113,6 +122,12 @@ export interface Sim {
   events: string[];
   nextId: number;
   rng: () => number;
+  /** Remote cruisers. Empty in solo. */
+  wings: Wing[];
+  /** Shared sector: one cruiser can fall and the wing keeps fighting. */
+  coop: boolean;
+  /** Local cruiser is dead while a wingmate is still up. */
+  localDown: boolean;
 }
 
 export interface Input {

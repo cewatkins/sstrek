@@ -202,6 +202,12 @@ function drawStatus(ctx: CanvasRenderingContext2D, sim: Sim, r: Rect): void {
     y += r.h * 0.05;
     ctx.fillStyle = "#8aa396";
     ctx.fillText(`ANCHORS ${String(anchors).padStart(2, "0")}`, x, y);
+    if (sim.coop) {
+      const up = (sim.localDown ? 0 : 1) + sim.wings.filter((wing) => wing.alive).length;
+      y += r.h * 0.05;
+      ctx.fillStyle = "#7ec8ff";
+      ctx.fillText(`WING ${String(up).padStart(2, "0")}`, x, y);
+    }
   });
   brackets(ctx, r, "#1f8a4c");
 }
@@ -285,6 +291,30 @@ function drawScanner(ctx: CanvasRenderingContext2D, sim: Sim, r: Rect): void {
       ctx.lineTo(tip.sx, tip.sy);
       ctx.stroke();
     }
+    for (const mate of sim.wings) {
+      if (!mate.alive && mate.ship.hurtT <= 0) continue;
+      const ghost = mate.alive ? 1 : 0.4;
+      ctx.globalAlpha = ghost;
+      const nose = 78;
+      const back = 42;
+      const span = 48;
+      const fx = -Math.sin(mate.ship.yaw);
+      const fz = -Math.cos(mate.ship.yaw);
+      const rx = Math.cos(mate.ship.yaw);
+      const rz = -Math.sin(mate.ship.yaw);
+      const a = to(mate.ship.x + fx * nose, mate.ship.z + fz * nose);
+      const b = to(mate.ship.x - fx * back + rx * span, mate.ship.z - fz * back + rz * span);
+      const c = to(mate.ship.x - fx * back - rx * span, mate.ship.z - fz * back - rz * span);
+      ctx.strokeStyle = mate.ship.warping ? "#4d8bff" : mate.color;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(a.sx, a.sy);
+      ctx.lineTo(b.sx, b.sy);
+      ctx.lineTo(c.sx, c.sy);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
   });
   brackets(ctx, r, "#24506a");
 }
@@ -357,12 +387,45 @@ function drawViewer(ctx: CanvasRenderingContext2D, sim: Sim, r: Rect): void {
     }
 
     const drawables = sim.ents.filter((e) => e.alive && e.kind !== "shot" && e.kind !== "shell");
+    for (const mate of sim.wings) {
+      drawables.push({
+        id: -1,
+        kind: "raider",
+        x: mate.ship.x,
+        z: mate.ship.z,
+        y: 18,
+        vx: 0,
+        vz: 0,
+        yaw: mate.ship.yaw,
+        hp: 1,
+        r: mate.ship.r,
+        spd: 0,
+        cd: 0,
+        life: 0,
+        arm: 0,
+        alive: true,
+        used: false,
+        flash: mate.ship.hurtT > 0 ? 0.1 : 0,
+        intro: 0,
+        seed: 0,
+        ang: 0,
+      });
+    }
     drawables.sort((a, b) => depthOf(b, p.x, p.z, fx, fz) - depthOf(a, p.x, p.z, fx, fz));
     for (const ent of drawables) {
       const depth = depthOf(ent, p.x, p.z, fx, fz);
       if (depth < 10) continue;
+      const mate = sim.wings.find((wing) => Math.abs(wing.ship.x - ent.x) < 0.01 && Math.abs(wing.ship.z - ent.z) < 0.01 && ent.kind === "raider" && ent.id === -1);
       const grow = 1 + ent.intro * 2.2;
-      const color = ent.flash > 0 ? "#ffffff" : ent.kind === "station" && ent.used ? "#1f6b42" : COLOR[ent.kind];
+      const color = ent.flash > 0
+        ? "#ffffff"
+        : mate
+          ? mate.ship.warping
+            ? "#4d8bff"
+            : mate.color
+          : ent.kind === "station" && ent.used
+            ? "#1f6b42"
+            : COLOR[ent.kind];
       strokeModel(ctx, project, ent, color, grow);
     }
 

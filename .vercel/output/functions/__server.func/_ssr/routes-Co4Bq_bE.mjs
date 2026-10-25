@@ -1,7 +1,8 @@
-import { i as __toESM } from "../_runtime.mjs";
+import { o as __toESM } from "../_runtime.mjs";
 import { K as require_react, b as require_jsx_runtime } from "../_libs/@tanstack/react-router+[...].mjs";
 import { i as Pause, n as Volume2, t as VolumeX } from "../_libs/lucide-react.mjs";
-//#region node_modules/.nitro/vite/services/ssr/assets/routes-CED1fPGp.js
+import { n as previewPathPrefix } from "./router-BYvo-4a2.mjs";
+//#region node_modules/.nitro/vite/services/ssr/assets/routes-Co4Bq_bE.js
 var import_react = /* @__PURE__ */ __toESM(require_react());
 var import_jsx_runtime = require_jsx_runtime();
 /** Short synthesized cabinet voices. Unlocked from a user gesture. */
@@ -822,6 +823,12 @@ function drawStatus(ctx, sim, r) {
 		y += r.h * .05;
 		ctx.fillStyle = "#8aa396";
 		ctx.fillText(`ANCHORS ${String(anchors).padStart(2, "0")}`, x, y);
+		if (sim.coop) {
+			const up = (sim.localDown ? 0 : 1) + sim.wings.filter((wing) => wing.alive).length;
+			y += r.h * .05;
+			ctx.fillStyle = "#7ec8ff";
+			ctx.fillText(`WING ${String(up).padStart(2, "0")}`, x, y);
+		}
 	});
 	brackets(ctx, r, "#1f8a4c");
 }
@@ -903,6 +910,29 @@ function drawScanner(ctx, sim, r) {
 			ctx.lineTo(tip.sx, tip.sy);
 			ctx.stroke();
 		}
+		for (const mate of sim.wings) {
+			if (!mate.alive && mate.ship.hurtT <= 0) continue;
+			ctx.globalAlpha = mate.alive ? 1 : .4;
+			const nose = 78;
+			const back = 42;
+			const span = 48;
+			const fx = -Math.sin(mate.ship.yaw);
+			const fz = -Math.cos(mate.ship.yaw);
+			const rx = Math.cos(mate.ship.yaw);
+			const rz = -Math.sin(mate.ship.yaw);
+			const a = to(mate.ship.x + fx * nose, mate.ship.z + fz * nose);
+			const b = to(mate.ship.x - fx * back + rx * span, mate.ship.z - fz * back + rz * span);
+			const c = to(mate.ship.x - fx * back - rx * span, mate.ship.z - fz * back - rz * span);
+			ctx.strokeStyle = mate.ship.warping ? "#4d8bff" : mate.color;
+			ctx.lineWidth = 1.6;
+			ctx.beginPath();
+			ctx.moveTo(a.sx, a.sy);
+			ctx.lineTo(b.sx, b.sy);
+			ctx.lineTo(c.sx, c.sy);
+			ctx.closePath();
+			ctx.stroke();
+			ctx.globalAlpha = 1;
+		}
 	});
 	brackets(ctx, r, "#24506a");
 }
@@ -971,11 +1001,34 @@ function drawViewer(ctx, sim, r) {
 			strokeWorld(ctx, project, -1200, 0, gline, 1200, 0, gline);
 		}
 		const drawables = sim.ents.filter((e) => e.alive && e.kind !== "shot" && e.kind !== "shell");
+		for (const mate of sim.wings) drawables.push({
+			id: -1,
+			kind: "raider",
+			x: mate.ship.x,
+			z: mate.ship.z,
+			y: 18,
+			vx: 0,
+			vz: 0,
+			yaw: mate.ship.yaw,
+			hp: 1,
+			r: mate.ship.r,
+			spd: 0,
+			cd: 0,
+			life: 0,
+			arm: 0,
+			alive: true,
+			used: false,
+			flash: mate.ship.hurtT > 0 ? .1 : 0,
+			intro: 0,
+			seed: 0,
+			ang: 0
+		});
 		drawables.sort((a, b) => depthOf(b, p.x, p.z, fx, fz) - depthOf(a, p.x, p.z, fx, fz));
 		for (const ent of drawables) {
 			if (depthOf(ent, p.x, p.z, fx, fz) < 10) continue;
+			const mate = sim.wings.find((wing) => Math.abs(wing.ship.x - ent.x) < .01 && Math.abs(wing.ship.z - ent.z) < .01 && ent.kind === "raider" && ent.id === -1);
 			const grow = 1 + ent.intro * 2.2;
-			const color = ent.flash > 0 ? "#ffffff" : ent.kind === "station" && ent.used ? "#1f6b42" : COLOR[ent.kind];
+			const color = ent.flash > 0 ? "#ffffff" : mate ? mate.ship.warping ? "#4d8bff" : mate.color : ent.kind === "station" && ent.used ? "#1f6b42" : COLOR[ent.kind];
 			strokeModel(ctx, project, ent, color, grow);
 		}
 		for (const s of sim.sparks) {
@@ -1423,6 +1476,96 @@ function freshPlayer() {
 		lockId: -1
 	};
 }
+function idleInput() {
+	return {
+		steer: 0,
+		impulse: false,
+		warp: false,
+		lance: false,
+		burst: false,
+		spin: 0
+	};
+}
+var SPAWNS = [
+	{
+		x: 0,
+		z: 720
+	},
+	{
+		x: -180,
+		z: 860
+	},
+	{
+		x: 180,
+		z: 860
+	},
+	{
+		x: 0,
+		z: 980
+	}
+];
+function resetShip(ship, x, z) {
+	Object.assign(ship, freshPlayer());
+	ship.x = x;
+	ship.z = z;
+	ship.iframe = 1.15;
+}
+function placeFleet(sim) {
+	sim.localDown = false;
+	resetShip(sim.player, SPAWNS[0].x, SPAWNS[0].z);
+	sim.wings.forEach((wing, i) => {
+		const spot = SPAWNS[(i + 1) % SPAWNS.length];
+		wing.alive = true;
+		wing.input = idleInput();
+		resetShip(wing.ship, spot.x, spot.z);
+	});
+}
+function syncWings(sim, roster) {
+	sim.coop = true;
+	const kept = new Map(sim.wings.map((wing) => [wing.id, wing]));
+	const next = [];
+	for (const peer of roster.slice(0, 3)) {
+		const prev = kept.get(peer.id);
+		if (prev) {
+			prev.name = peer.name || prev.name;
+			next.push(prev);
+			continue;
+		}
+		const ship = freshPlayer();
+		if (sim.phase === "play" || sim.phase === "clear" || sim.phase === "pause") {
+			ship.x = sim.player.x + 140;
+			ship.z = sim.player.z + 90;
+			ship.iframe = 2;
+		}
+		next.push({
+			id: peer.id,
+			name: peer.name || "WING",
+			color: wingColor(peer.id),
+			alive: true,
+			ship,
+			input: idleInput()
+		});
+	}
+	sim.wings = next;
+	if (sim.coop && sim.phase === "play" && sim.localDown && sim.wings.length === 0) {
+		sim.phase = "over";
+		sim.banner = "WING LOST";
+		sim.bannerSub = "NO CRUISERS LEFT";
+		sim.bannerT = 3;
+		noteScore(sim);
+	}
+}
+function wingColor(id) {
+	const palette = [
+		"#7ec8ff",
+		"#ffb020",
+		"#ff6b8a",
+		"#d2a6ff"
+	];
+	let hash = 0;
+	for (let i = 0; i < id.length; i++) hash = hash * 33 + id.charCodeAt(i) >>> 0;
+	return palette[hash % palette.length];
+}
 function mk(sim, kind, x, z, extra = {}) {
 	const combat = STAT[kind];
 	return {
@@ -1493,7 +1636,7 @@ function spawnRim(sim, kind) {
 		const rad = 980 + sim.rng() * 130;
 		const x = Math.cos(a) * rad;
 		const z = Math.sin(a) * rad;
-		if (Math.hypot(x - sim.player.x, z - sim.player.z) < 300) continue;
+		if (fleetNear(sim, x, z, 300)) continue;
 		let blocked = false;
 		for (const e of sim.ents) if (Math.hypot(e.x - x, e.z - z) < 90) {
 			blocked = true;
@@ -1526,14 +1669,7 @@ function beginSector(sim, index) {
 	sim.ents = [];
 	sim.beams = [];
 	sim.blooms = [];
-	sim.player.x = 0;
-	sim.player.z = 720;
-	sim.player.yaw = 0;
-	sim.player.speed = 0;
-	sim.player.dockT = 0;
-	sim.player.warping = false;
-	sim.player.iframe = 1.15;
-	sim.player.lockId = -1;
+	placeFleet(sim);
 	const spots = [
 		{
 			x: 0,
@@ -1589,7 +1725,10 @@ function createSim() {
 		pops: [],
 		events: [],
 		nextId: 1,
-		rng: mulberry32(42)
+		rng: mulberry32(42),
+		wings: [],
+		coop: false,
+		localDown: false
 	};
 	sim.player.z = 560;
 	for (const [kind, x, z] of [
@@ -1641,6 +1780,12 @@ function createSim() {
 function startGame(sim) {
 	sim.score = 0;
 	sim.player = freshPlayer();
+	sim.localDown = false;
+	for (const wing of sim.wings) {
+		wing.alive = true;
+		wing.ship = freshPlayer();
+		wing.input = idleInput();
+	}
 	sim.sparks = [];
 	sim.pops = [];
 	sim.shake = 0;
@@ -1651,11 +1796,13 @@ function startGame(sim) {
 function decayFx(sim, dt) {
 	sim.bannerT = Math.max(0, sim.bannerT - dt);
 	sim.hintT = Math.max(0, sim.hintT - dt);
-	const p = sim.player;
-	p.hurtT = Math.max(0, p.hurtT - dt);
-	p.iframe = Math.max(0, p.iframe - dt);
-	p.lanceCd = Math.max(0, p.lanceCd - dt);
-	p.shellCd = Math.max(0, p.shellCd - dt);
+	const ships = [sim.player, ...sim.wings.map((wing) => wing.ship)];
+	for (const p of ships) {
+		p.hurtT = Math.max(0, p.hurtT - dt);
+		p.iframe = Math.max(0, p.iframe - dt);
+		p.lanceCd = Math.max(0, p.lanceCd - dt);
+		p.shellCd = Math.max(0, p.shellCd - dt);
+	}
 	sim.shake = Math.max(0, sim.shake - dt * 30);
 	for (const e of sim.ents) if (e.flash > 0) e.flash = Math.max(0, e.flash - dt);
 	for (const b of sim.beams) b.life -= dt;
@@ -1757,33 +1904,83 @@ function sparks(sim, x, y, z, color, n) {
 		});
 	}
 }
-function safePlayer(sim) {
-	const p = sim.player;
-	return p.warping || p.dockT > 0 || p.iframe > 0 || sim.phase !== "play";
+function fleetNear(sim, x, z, rad) {
+	if (Math.hypot(x - sim.player.x, z - sim.player.z) < rad) return true;
+	for (const wing of sim.wings) if (Math.hypot(x - wing.ship.x, z - wing.ship.z) < rad) return true;
+	return false;
 }
-function hurtPlayer(sim) {
-	if (safePlayer(sim)) return;
-	const p = sim.player;
-	p.iframe = .72;
-	p.hurtT = .38;
+function livingShips(sim) {
+	const list = [];
+	if (!sim.localDown) list.push({
+		ship: sim.player,
+		wing: null
+	});
+	for (const wing of sim.wings) if (wing.alive) list.push({
+		ship: wing.ship,
+		wing
+	});
+	return list;
+}
+function nearestLiving(sim, x, z) {
+	let best = null;
+	let bestD = 0xe8d4a51000;
+	for (const slot of livingShips(sim)) {
+		const d = (slot.ship.x - x) ** 2 + (slot.ship.z - z) ** 2;
+		if (d < bestD) {
+			bestD = d;
+			best = slot;
+		}
+	}
+	return best;
+}
+function safeShip(ship, sim) {
+	return ship.warping || ship.dockT > 0 || ship.iframe > 0 || sim.phase !== "play";
+}
+function wipeFleet(sim) {
+	if ((!sim.localDown || sim.wings.some((wing) => wing.alive)) && !(sim.localDown && sim.wings.every((wing) => !wing.alive))) return;
+	sim.phase = "over";
+	sim.banner = sim.coop ? "WING LOST" : "HULL LOST";
+	sim.bannerSub = sim.coop ? "NO CRUISERS LEFT" : "ONE CRUISER";
+	sim.bannerT = 3;
+	noteScore(sim);
+}
+function hurtShip(sim, ship, wing) {
+	if (safeShip(ship, sim)) return;
+	ship.iframe = .72;
+	ship.hurtT = .38;
 	sim.shake = Math.min(16, sim.shake + 10);
 	sim.hitstop = Math.max(sim.hitstop, .04);
-	if (p.shields > 0) p.shields -= 1;
-	else if (p.shells > 0) p.shells -= 1;
-	else if (p.warp > 0) p.warp = Math.max(0, p.warp - 28);
+	if (ship.shields > 0) ship.shields -= 1;
+	else if (ship.shells > 0) ship.shells -= 1;
+	else if (ship.warp > 0) ship.warp = Math.max(0, ship.warp - 28);
 	else {
-		p.speed = 0;
-		p.warping = false;
-		sim.phase = "over";
-		sim.banner = "HULL LOST";
-		sim.bannerSub = "ONE CRUISER";
-		sim.bannerT = 3;
-		sparks(sim, p.x, 18, p.z, "#ff4d5a", 18);
-		noteScore(sim);
+		ship.speed = 0;
+		ship.warping = false;
+		sparks(sim, ship.x, 18, ship.z, "#ff4d5a", 18);
 		sim.events.push("die");
+		if (wing) {
+			wing.alive = false;
+			sim.banner = "WING DOWN";
+			sim.bannerSub = wing.name;
+			sim.bannerT = 1.3;
+		} else if (sim.coop && sim.wings.some((item) => item.alive)) {
+			sim.localDown = true;
+			sim.banner = "CRUISER LOST";
+			sim.bannerSub = "WING STILL UP";
+			sim.bannerT = 2;
+		} else {
+			sim.localDown = true;
+			sim.phase = "over";
+			sim.banner = "HULL LOST";
+			sim.bannerSub = "ONE CRUISER";
+			sim.bannerT = 3;
+			noteScore(sim);
+			return;
+		}
+		wipeFleet(sim);
 		return;
 	}
-	sparks(sim, p.x, 18, p.z, "#ffb020", 8);
+	sparks(sim, ship.x, 18, ship.z, "#ffb020", 8);
 	sim.events.push("hurt");
 }
 function scoreKill(sim, ent) {
@@ -1856,7 +2053,7 @@ function tryShoot(sim, ent, tx, tz, range, cd) {
 }
 function updateEnemy(sim, ent, dt) {
 	const stat = STAT[ent.kind];
-	const p = sim.player;
+	const p = nearestLiving(sim, ent.x, ent.z)?.ship ?? sim.player;
 	if (ent.kind === "asteroid") {
 		ent.x += ent.vx * dt;
 		ent.z += ent.vz * dt;
@@ -1880,7 +2077,7 @@ function updateEnemy(sim, ent, dt) {
 				max: stat?.range ?? 200,
 				color: "#49e7ff"
 			});
-			if (Math.hypot(p.x - ent.x, p.z - ent.z) < (stat?.range ?? 200) && !safePlayer(sim)) hurtPlayer(sim);
+			for (const slot of livingShips(sim)) if (Math.hypot(slot.ship.x - ent.x, slot.ship.z - ent.z) < (stat?.range ?? 200)) hurtShip(sim, slot.ship, slot.wing);
 			sim.events.push("ping");
 		}
 		return;
@@ -1952,15 +2149,14 @@ function separate(sim, dt) {
 		}
 	}
 }
-function acquire(sim) {
-	const p = sim.player;
-	const { fx, fz, rx, rz } = fwd(p.yaw);
+function acquire(sim, ship) {
+	const { fx, fz, rx, rz } = fwd(ship.yaw);
 	let best = null;
 	let bestAng = 99;
 	for (const e of sim.ents) {
 		if (!e.alive || !BLASTABLE[e.kind]) continue;
-		const dx = e.x - p.x;
-		const dz = e.z - p.z;
+		const dx = e.x - ship.x;
+		const dz = e.z - ship.z;
 		const dist = Math.hypot(dx, dz);
 		if (dist < 28 || dist > 560) continue;
 		const forward = dx * fx + dz * fz;
@@ -2004,7 +2200,6 @@ function detonate(sim, x, z) {
 	sim.events.push("boom");
 }
 function moveProjectiles(sim, dt) {
-	const p = sim.player;
 	for (const s of sim.ents) {
 		if (!s.alive) continue;
 		if (s.kind === "shot") {
@@ -2019,11 +2214,14 @@ function moveProjectiles(sim, dt) {
 				s.alive = false;
 				continue;
 			}
-			if (Math.hypot(s.x - p.x, s.z - p.z) < p.r + 4) {
+			let hitShip = false;
+			for (const slot of livingShips(sim)) if (Math.hypot(s.x - slot.ship.x, s.z - slot.ship.z) < slot.ship.r + 4) {
 				s.alive = false;
-				hurtPlayer(sim);
-				continue;
+				hurtShip(sim, slot.ship, slot.wing);
+				hitShip = true;
+				break;
 			}
+			if (hitShip) continue;
 			for (const st of sim.ents) {
 				if (st.kind !== "station" || !st.alive) continue;
 				if (Math.hypot(s.x - st.x, s.z - st.z) < st.r) {
@@ -2056,30 +2254,35 @@ function moveProjectiles(sim, dt) {
 				s.alive = false;
 				continue;
 			}
-			if (s.arm <= 0 && Math.hypot(s.x - p.x, s.z - p.z) < 76) {
-				s.alive = false;
-				sim.blooms.push({
-					x: s.x,
-					z: s.z,
-					life: .3,
-					max: 90,
-					color: "#ffd25a"
-				});
-				hurtPlayer(sim);
+			if (s.arm <= 0) {
+				for (const slot of livingShips(sim)) if (Math.hypot(s.x - slot.ship.x, s.z - slot.ship.z) < 76) {
+					s.alive = false;
+					sim.blooms.push({
+						x: s.x,
+						z: s.z,
+						life: .3,
+						max: 90,
+						color: "#ffd25a"
+					});
+					hurtShip(sim, slot.ship, slot.wing);
+					break;
+				}
 			}
 		}
 	}
 }
 function ram(sim) {
-	const p = sim.player;
-	if (safePlayer(sim)) return;
-	for (const e of sim.ents) {
-		if (!e.alive) continue;
-		if (e.kind !== "raider" && e.kind !== "hunter" && e.kind !== "dart" && e.kind !== "saucer" && e.kind !== "asteroid" && e.kind !== "relic") continue;
-		if (Math.hypot(e.x - p.x, e.z - p.z) < e.r * .72 + p.r * .55) {
-			hurtPlayer(sim);
-			if (e.kind === "asteroid") hurtEnt(sim, e, 99);
-			break;
+	for (const slot of livingShips(sim)) {
+		const p = slot.ship;
+		if (safeShip(p, sim)) continue;
+		for (const e of sim.ents) {
+			if (!e.alive) continue;
+			if (e.kind !== "raider" && e.kind !== "hunter" && e.kind !== "dart" && e.kind !== "saucer" && e.kind !== "asteroid" && e.kind !== "relic") continue;
+			if (Math.hypot(e.x - p.x, e.z - p.z) < e.r * .72 + p.r * .55) {
+				hurtShip(sim, p, slot.wing);
+				if (e.kind === "asteroid") hurtEnt(sim, e, 99);
+				break;
+			}
 		}
 	}
 }
@@ -2095,35 +2298,16 @@ function clearIfDone(sim) {
 	sim.clearT = 2.55;
 	sim.player.speed = 0;
 	sim.player.warping = false;
+	for (const wing of sim.wings) {
+		wing.ship.speed = 0;
+		wing.ship.warping = false;
+	}
 	sim.banner = "SECTOR CLEAR";
 	sim.bannerSub = `BONUS ${bonus}`;
 	sim.bannerT = 2.55;
 	sim.events.push("clear");
 }
-function step(sim, input, dt) {
-	sim.t += dt;
-	if (sim.phase === "title") {
-		stepTitle(sim, dt);
-		decayFx(sim, dt);
-		return;
-	}
-	if (sim.phase === "pause" || sim.phase === "over") {
-		decayFx(sim, dt);
-		return;
-	}
-	if (sim.phase === "clear") {
-		sim.clearT -= dt;
-		decayFx(sim, dt);
-		if (sim.clearT <= 0) beginSector(sim, sim.sector + 1);
-		return;
-	}
-	if (sim.hitstop > 0) {
-		sim.hitstop -= dt;
-		decayFx(sim, dt);
-		return;
-	}
-	const p = sim.player;
-	for (const e of sim.ents) if (e.intro > 0) e.intro = Math.max(0, e.intro - dt);
+function pilot(sim, p, input, dt) {
 	const wantWarp = input.warp && p.warp > 0 && p.dockT <= 0;
 	const x0 = p.x;
 	const z0 = p.z;
@@ -2165,7 +2349,7 @@ function step(sim, input, dt) {
 		}
 	}
 	const { fx, fz } = fwd(p.yaw);
-	const locked = acquire(sim);
+	const locked = acquire(sim, p);
 	p.lockId = locked ? locked.id : -1;
 	if (p.dockT <= 0 && input.lance && p.lanceCd <= 0) {
 		p.lanceCd = .24;
@@ -2210,6 +2394,42 @@ function step(sim, input, dt) {
 			sim.events.push("dry");
 		}
 	}
+}
+function step(sim, input, dt) {
+	sim.t += dt;
+	if (sim.phase === "title") {
+		stepTitle(sim, dt);
+		decayFx(sim, dt);
+		return;
+	}
+	if (sim.phase === "pause" || sim.phase === "over") {
+		decayFx(sim, dt);
+		return;
+	}
+	if (sim.phase === "clear") {
+		sim.clearT -= dt;
+		decayFx(sim, dt);
+		if (sim.clearT <= 0) beginSector(sim, sim.sector + 1);
+		return;
+	}
+	if (sim.hitstop > 0) {
+		sim.hitstop -= dt;
+		decayFx(sim, dt);
+		return;
+	}
+	for (const e of sim.ents) if (e.intro > 0) e.intro = Math.max(0, e.intro - dt);
+	if (!sim.localDown) pilot(sim, sim.player, input, dt);
+	else {
+		sim.player.speed = 0;
+		sim.player.warping = false;
+	}
+	for (const wing of sim.wings) {
+		if (!wing.alive) continue;
+		pilot(sim, wing.ship, wing.input, dt);
+		wing.input.lance = false;
+		wing.input.burst = false;
+		wing.input.spin = 0;
+	}
 	const count = sim.ents.length;
 	for (let i = 0; i < count; i++) {
 		const ent = sim.ents[i];
@@ -2223,6 +2443,933 @@ function step(sim, input, dt) {
 	sim.ents = sim.ents.filter((e) => e.alive);
 	decayFx(sim, dt);
 }
+var FAST_POLL_MS = 400;
+var IDLE_POLL_MS = 2e3;
+var PING_INTERVAL_MS = 2e3;
+var STALL_MS = 1e4;
+var MAX_RECOVERY_ATTEMPTS = 3;
+var SIGNAL_RETRY_DELAYS_MS = [250, 750];
+function rtcUrl(search = "") {
+	return `${typeof window === "undefined" ? "" : previewPathPrefix(window.location.hostname, window.location.pathname) ?? ""}/api/rtc${search}`;
+}
+function defaultIceServers() {
+	return [{ urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] }];
+}
+var P2PRoom = class {
+	opts;
+	peers = /* @__PURE__ */ new Map();
+	/** Per-remote-peer signal delivery chains (order-preserving). */
+	signalQueues = /* @__PURE__ */ new Map();
+	cursor = 0;
+	pollTimer = null;
+	pingTimer = null;
+	closed = false;
+	everPolled = false;
+	lastPeersFingerprint = "";
+	constructor(opts) {
+		this.opts = opts;
+	}
+	/**
+	* The first poll IS the join: it registers this peer and returns the
+	* roster. A failed first poll (cold DB, offline tab) must not strand the
+	* room: the loop and timers start regardless and the next poll retries.
+	*/
+	async join() {
+		try {
+			await this.pollOnce();
+		} catch {}
+		if (this.closed) return;
+		this.schedulePoll(this.anyPairConnecting() ? FAST_POLL_MS : IDLE_POLL_MS);
+		this.pingTimer = setInterval(() => {
+			this.pingAll();
+			this.watchdog();
+		}, PING_INTERVAL_MS);
+	}
+	close() {
+		this.closed = true;
+		if (this.pollTimer) clearTimeout(this.pollTimer);
+		if (this.pingTimer) clearInterval(this.pingTimer);
+		for (const slot of this.peers.values()) slot.pc.close();
+		this.peers.clear();
+		fetch(rtcUrl(), {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				op: "leave",
+				room: this.opts.room,
+				peer: this.opts.selfId
+			}),
+			keepalive: true
+		}).catch(() => {});
+	}
+	/** Send on the unreliable game-state channel (drops stale packets). */
+	broadcast(data) {
+		const wire = JSON.stringify({
+			t: "d",
+			d: data
+		});
+		for (const slot of this.peers.values()) if (slot.state?.readyState === "open") slot.state.send(wire);
+	}
+	/** Send reliably (ordered) to one peer, or to all when peerId is omitted. */
+	send(data, peerId) {
+		const wire = JSON.stringify({
+			t: "d",
+			d: data
+		});
+		const targets = peerId ? [this.peers.get(peerId)] : [...this.peers.values()];
+		for (const slot of targets) if (slot?.reliable?.readyState === "open") slot.reliable.send(wire);
+	}
+	peerList() {
+		return [...this.peers.values()].map((s) => ({ ...s.info }));
+	}
+	schedulePoll(delay) {
+		if (this.closed) return;
+		if (this.pollTimer) clearTimeout(this.pollTimer);
+		this.pollTimer = setTimeout(() => void this.poll(), delay);
+	}
+	anyPairConnecting() {
+		for (const s of this.peers.values()) {
+			if (s.terminal) continue;
+			if (s.info.connectionState !== "connected") return true;
+		}
+		return false;
+	}
+	async pollOnce() {
+		const params = new URLSearchParams({
+			room: this.opts.room,
+			peer: this.opts.selfId,
+			name: this.opts.name ?? "",
+			since: String(this.cursor)
+		});
+		const res = await fetch(rtcUrl(`?${params}`));
+		if (this.closed) return;
+		if (!res.ok) throw new Error(`signaling poll failed: ${res.status}`);
+		const body = await res.json();
+		if (this.closed) return;
+		if (!this.everPolled) {
+			this.everPolled = true;
+			this.opts.onConnected?.();
+		}
+		this.reconcileRoster(body.peers);
+		const roster = new Set(body.peers.map((p) => p.id));
+		for (const sig of body.signals) {
+			this.cursor = Math.max(this.cursor, sig.id);
+			await this.onSignal(sig.from, sig.kind, sig.payload, roster);
+			if (this.closed) return;
+		}
+	}
+	async poll() {
+		if (this.closed) return;
+		try {
+			await this.pollOnce();
+		} catch {}
+		this.schedulePoll(this.anyPairConnecting() ? FAST_POLL_MS : IDLE_POLL_MS);
+	}
+	reconcileRoster(peers) {
+		const alive = new Set(peers.map((p) => p.id));
+		for (const p of peers) {
+			if (p.id === this.opts.selfId) continue;
+			const existing = this.peers.get(p.id);
+			if (existing) existing.info.name = p.name;
+			else this.connectTo(p.id, p.name, this.opts.selfId > p.id);
+		}
+		for (const [id, slot] of this.peers) if (!alive.has(id)) {
+			slot.pc.close();
+			this.peers.delete(id);
+		}
+		this.emitPeers();
+	}
+	connectTo(peerId, name, initiator) {
+		if (this.closed) return null;
+		const pc = new RTCPeerConnection({ iceServers: this.opts.iceServers ?? defaultIceServers() });
+		const slot = {
+			pc,
+			makingOffer: false,
+			ignoreOffer: false,
+			pendingCandidates: [],
+			lastProgressAt: Date.now(),
+			recoveryAttempts: 0,
+			info: {
+				id: peerId,
+				name,
+				connectionState: pc.connectionState,
+				candidateType: null,
+				rttMs: null
+			}
+		};
+		this.peers.set(peerId, slot);
+		pc.onicecandidate = (e) => {
+			if (e.candidate) this.sendSignal(peerId, "ice", e.candidate.toJSON());
+		};
+		pc.onconnectionstatechange = () => {
+			slot.info.connectionState = pc.connectionState;
+			if (pc.connectionState === "connecting" || pc.connectionState === "connected") slot.lastProgressAt = Date.now();
+			if (pc.connectionState === "connected") {
+				slot.recoveryAttempts = 0;
+				slot.terminal = false;
+				this.readCandidateType(slot);
+			}
+			this.emitPeers();
+			if (pc.connectionState === "failed") pc.restartIce();
+			if (pc.connectionState === "failed" || pc.connectionState === "disconnected") this.schedulePoll(FAST_POLL_MS);
+		};
+		pc.onnegotiationneeded = async () => {
+			try {
+				slot.makingOffer = true;
+				await pc.setLocalDescription();
+				await this.sendSignal(peerId, "offer", pc.localDescription.toJSON());
+			} catch {} finally {
+				slot.makingOffer = false;
+			}
+		};
+		pc.ondatachannel = (e) => this.attachChannel(slot, e.channel);
+		if (initiator) {
+			this.attachChannel(slot, pc.createDataChannel("state", {
+				ordered: false,
+				maxRetransmits: 0
+			}));
+			this.attachChannel(slot, pc.createDataChannel("reliable", { ordered: true }));
+		}
+		return slot;
+	}
+	attachChannel(slot, channel) {
+		if (channel.label === "state") slot.state = channel;
+		else slot.reliable = channel;
+		channel.onopen = () => {
+			slot.lastProgressAt = Date.now();
+		};
+		channel.onmessage = (e) => {
+			let msg;
+			try {
+				msg = JSON.parse(e.data);
+			} catch {
+				return;
+			}
+			if (msg.t === "ping") {
+				if (slot.state?.readyState === "open") slot.state.send(JSON.stringify({ t: "pong" }));
+			} else if (msg.t === "pong") {
+				if (slot.pingSentAt) {
+					slot.info.rttMs = Math.round(performance.now() - slot.pingSentAt);
+					slot.pingSentAt = void 0;
+					this.emitPeers();
+				}
+			} else this.opts.onMessage?.(slot.info.id, msg.d, channel.label === "state" ? "state" : "reliable");
+		};
+	}
+	/** Apply buffered ICE candidates once a remote description is in place. */
+	async flushPendingCandidates(slot) {
+		while (slot.pendingCandidates.length > 0) {
+			const candidate = slot.pendingCandidates.shift();
+			try {
+				await slot.pc.addIceCandidate(candidate);
+			} catch (err) {
+				if (!slot.ignoreOffer) console.warn("[p2p] addIceCandidate failed:", err);
+			}
+			if (this.closed) return;
+		}
+	}
+	async onSignal(from, kind, payload, roster) {
+		if (this.closed) return;
+		let slot = this.peers.get(from);
+		if (!slot) {
+			if (!roster.has(from)) return;
+			const created = this.connectTo(from, "", false);
+			if (!created) return;
+			slot = created;
+		}
+		const polite = this.opts.selfId < from;
+		try {
+			if (kind === "offer" || kind === "answer") {
+				const description = payload;
+				const collision = kind === "offer" && (slot.makingOffer || slot.pc.signalingState !== "stable");
+				slot.ignoreOffer = !polite && collision;
+				if (slot.ignoreOffer) return;
+				try {
+					await slot.pc.setRemoteDescription(description);
+				} catch (err) {
+					if (kind !== "offer" || slot.recreatedForOffer) throw err;
+					const attempts = slot.recoveryAttempts;
+					const name = slot.info.name;
+					slot.pc.close();
+					this.peers.delete(from);
+					const fresh = this.connectTo(from, name, false);
+					if (!fresh) return;
+					fresh.recoveryAttempts = attempts;
+					fresh.recreatedForOffer = true;
+					slot = fresh;
+					await slot.pc.setRemoteDescription(description);
+				}
+				if (this.closed) return;
+				await this.flushPendingCandidates(slot);
+				if (this.closed) return;
+				if (kind === "offer") {
+					await slot.pc.setLocalDescription();
+					if (this.closed) return;
+					await this.sendSignal(from, "answer", slot.pc.localDescription.toJSON());
+				}
+			} else if (kind === "ice") {
+				const candidate = payload;
+				if (!slot.pc.remoteDescription) {
+					slot.pendingCandidates.push(candidate);
+					return;
+				}
+				try {
+					await slot.pc.addIceCandidate(candidate);
+				} catch (err) {
+					if (!slot.ignoreOffer) console.warn("[p2p] addIceCandidate failed:", err);
+				}
+			}
+		} catch {}
+	}
+	/**
+	* Signals are serialized per remote peer (a candidate must never overtake
+	* its SDP into the DB) and retried on failure with short backoff.
+	*/
+	sendSignal(to, kind, payload) {
+		const next = (this.signalQueues.get(to) ?? Promise.resolve()).then(() => this.postSignal(to, kind, payload));
+		this.signalQueues.set(to, next.catch(() => {}));
+		return next;
+	}
+	async postSignal(to, kind, payload) {
+		for (let attempt = 0;; attempt++) {
+			if (this.closed) return;
+			try {
+				const res = await fetch(rtcUrl(), {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						op: "signal",
+						room: this.opts.room,
+						from: this.opts.selfId,
+						to,
+						kind,
+						payload
+					})
+				});
+				if (res.ok) return;
+				throw new Error(`signal POST failed: ${res.status}`);
+			} catch (err) {
+				if (attempt >= SIGNAL_RETRY_DELAYS_MS.length) {
+					console.warn(`[p2p] signal ${kind} to ${to} failed after retries`, err);
+					return;
+				}
+				await new Promise((r) => setTimeout(r, SIGNAL_RETRY_DELAYS_MS[attempt]));
+			}
+		}
+	}
+	pingAll() {
+		const wire = JSON.stringify({ t: "ping" });
+		for (const slot of this.peers.values()) {
+			if (slot.state?.readyState !== "open") continue;
+			const stale = slot.pingSentAt !== void 0 && performance.now() - slot.pingSentAt > 2 * PING_INTERVAL_MS;
+			if (slot.pingSentAt === void 0 || stale) {
+				slot.pingSentAt = performance.now();
+				slot.state.send(wire);
+			}
+		}
+	}
+	/**
+	* Stuck-pair recovery, piggybacked on the ping interval. A pair that has
+	* made no progress for STALL_MS gets rebuilt by the dialer with a FRESH
+	* RTCPeerConnection (new DTLS identity — fixes the suspend/resume
+	* fingerprint wedge). After MAX_RECOVERY_ATTEMPTS the pair is terminal:
+	* visible to the app as its last connectionState, ignored by fast-poll.
+	*/
+	watchdog() {
+		if (this.closed) return;
+		const now = Date.now();
+		for (const [peerId, slot] of this.peers) {
+			const live = slot.pc.connectionState;
+			if (live !== slot.info.connectionState) {
+				slot.info.connectionState = live;
+				if (live === "connecting" || live === "connected") slot.lastProgressAt = now;
+				this.emitPeers();
+			}
+			if (slot.terminal || live === "connected") continue;
+			if (now - slot.lastProgressAt <= STALL_MS) continue;
+			if (slot.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+				slot.terminal = true;
+				this.emitPeers();
+				continue;
+			}
+			slot.recoveryAttempts += 1;
+			slot.lastProgressAt = now;
+			if (this.opts.selfId > peerId) {
+				const { name } = slot.info;
+				const attempts = slot.recoveryAttempts;
+				slot.pc.close();
+				this.peers.delete(peerId);
+				const fresh = this.connectTo(peerId, name, true);
+				if (fresh) fresh.recoveryAttempts = attempts;
+				this.schedulePoll(FAST_POLL_MS);
+			}
+		}
+	}
+	async readCandidateType(slot) {
+		try {
+			const stats = await slot.pc.getStats();
+			let selected;
+			stats.forEach((s) => {
+				if (s.type === "candidate-pair" && s.nominated) selected = s;
+			});
+			const localId = selected?.localCandidateId;
+			if (localId) {
+				const local = stats.get(localId);
+				slot.info.candidateType = local?.candidateType ?? null;
+				this.emitPeers();
+			}
+		} catch {}
+	}
+	emitPeers() {
+		const list = this.peerList();
+		const fingerprint = JSON.stringify(list.map((p) => [
+			p.id,
+			p.name,
+			p.connectionState,
+			p.candidateType,
+			p.rttMs
+		]));
+		if (fingerprint === this.lastPeersFingerprint) return;
+		this.lastPeersFingerprint = fingerprint;
+		this.opts.onPeersChanged?.(list);
+	}
+};
+/**
+* React binding for P2PRoom. Identity and room id are captured once on mount.
+* Changing room or name requires a remount (key the component on them).
+*/
+function defaultRoom() {
+	if (typeof window === "undefined") return "room-ssr";
+	return `room-${window.location.hostname.split(".")[0]}`.slice(0, 64);
+}
+function useP2PRoom(options = {}) {
+	const [selfId] = (0, import_react.useState)(() => `p-${Math.random().toString(36).slice(2, 10)}`);
+	const [room] = (0, import_react.useState)(() => options.room ?? defaultRoom());
+	const [name] = (0, import_react.useState)(() => options.name ?? selfId);
+	const [peers, setPeers] = (0, import_react.useState)([]);
+	const [joined, setJoined] = (0, import_react.useState)(false);
+	const roomRef = (0, import_react.useRef)(null);
+	const listeners = (0, import_react.useRef)(/* @__PURE__ */ new Set());
+	(0, import_react.useEffect)(() => {
+		const p2p = new P2PRoom({
+			room,
+			selfId,
+			name,
+			onPeersChanged: setPeers,
+			onMessage: (from, data, channel) => {
+				for (const fn of listeners.current) fn(from, data, channel);
+			},
+			onConnected: () => setJoined(true)
+		});
+		roomRef.current = p2p;
+		p2p.join();
+		return () => {
+			roomRef.current = null;
+			p2p.close();
+		};
+	}, [
+		room,
+		selfId,
+		name
+	]);
+	return {
+		selfId,
+		room,
+		peers,
+		joined,
+		broadcast: (0, import_react.useCallback)((data) => roomRef.current?.broadcast(data), []),
+		send: (0, import_react.useCallback)((data, peerId) => roomRef.current?.send(data, peerId), []),
+		onMessage: (0, import_react.useCallback)((fn) => {
+			listeners.current.add(fn);
+			return () => {
+				listeners.current.delete(fn);
+			};
+		}, [])
+	};
+}
+var q = (n) => Math.round(n * 10) / 10;
+function idle() {
+	return {
+		steer: 0,
+		impulse: false,
+		warp: false,
+		lance: false,
+		burst: false,
+		spin: 0
+	};
+}
+function packShip(id, name, color, ship, alive) {
+	return {
+		id,
+		n: name,
+		c: color,
+		x: q(ship.x),
+		z: q(ship.z),
+		yaw: q(ship.yaw),
+		spd: q(ship.speed),
+		sh: ship.shields,
+		sl: ship.shells,
+		w: q(ship.warp),
+		warp: ship.warping,
+		alive,
+		hurt: q(ship.hurtT),
+		lock: ship.lockId,
+		dock: q(ship.dockT)
+	};
+}
+function packEnt(ent) {
+	return {
+		id: ent.id,
+		k: ent.kind,
+		x: q(ent.x),
+		z: q(ent.z),
+		y: q(ent.y),
+		yaw: q(ent.yaw),
+		vx: q(ent.vx),
+		vz: q(ent.vz),
+		r: ent.r,
+		hp: ent.hp,
+		used: ent.used,
+		flash: q(ent.flash)
+	};
+}
+function packSnap(sim, host, name, tick, ev) {
+	return {
+		op: "snap",
+		tick,
+		host,
+		phase: sim.phase,
+		sector: sim.sector,
+		sectorName: sim.sectorName,
+		score: sim.score,
+		banner: sim.banner,
+		bannerSub: sim.bannerSub,
+		bannerT: q(sim.bannerT),
+		hintT: q(sim.hintT),
+		shake: q(sim.shake),
+		ships: [packShip(host, name, "#b8ffcf", sim.player, !sim.localDown), ...sim.wings.map((wing) => packShip(wing.id, wing.name, wing.color, wing.ship, wing.alive))],
+		ents: sim.ents.filter((ent) => ent.alive).map(packEnt),
+		beams: sim.beams.map((beam) => ({
+			...beam,
+			x1: q(beam.x1),
+			z1: q(beam.z1),
+			x2: q(beam.x2),
+			z2: q(beam.z2),
+			life: q(beam.life)
+		})),
+		blooms: sim.blooms.map((bloom) => ({
+			...bloom,
+			x: q(bloom.x),
+			z: q(bloom.z),
+			life: q(bloom.life)
+		})),
+		pops: sim.pops.map((pop) => ({
+			...pop,
+			x: q(pop.x),
+			z: q(pop.z),
+			y: q(pop.y),
+			life: q(pop.life)
+		})),
+		ev
+	};
+}
+function isSnap(data) {
+	if (!data || typeof data !== "object") return false;
+	const snap = data;
+	return snap.op === "snap" && Array.isArray(snap.ships) && Array.isArray(snap.ents);
+}
+function createGuestView() {
+	return {
+		tick: -1,
+		host: "",
+		ents: /* @__PURE__ */ new Map(),
+		wings: /* @__PURE__ */ new Map(),
+		pose: /* @__PURE__ */ new Map()
+	};
+}
+function blankPlayer() {
+	return {
+		x: 0,
+		z: 720,
+		yaw: 0,
+		speed: 0,
+		shields: 4,
+		shells: 4,
+		warp: 76,
+		r: 26,
+		lanceCd: 0,
+		shellCd: 0,
+		dockT: 0,
+		iframe: 0,
+		hurtT: 0,
+		warping: false,
+		lockId: -1
+	};
+}
+function blankEnt(wire) {
+	return {
+		id: wire.id,
+		kind: wire.k,
+		x: wire.x,
+		z: wire.z,
+		y: wire.y,
+		vx: wire.vx,
+		vz: wire.vz,
+		yaw: wire.yaw,
+		hp: wire.hp,
+		r: wire.r,
+		spd: 0,
+		cd: 0,
+		life: 0,
+		arm: 0,
+		alive: true,
+		used: wire.used,
+		flash: wire.flash,
+		intro: 0,
+		seed: 0,
+		ang: 0
+	};
+}
+function writeShip(ship, wire, snapNow) {
+	ship.shields = wire.sh;
+	ship.shells = wire.sl;
+	ship.warp = wire.w;
+	ship.warping = wire.warp;
+	ship.hurtT = wire.hurt;
+	ship.lockId = wire.lock;
+	ship.dockT = wire.dock;
+	if (!snapNow) return;
+	ship.x = wire.x;
+	ship.z = wire.z;
+	ship.yaw = wire.yaw;
+	ship.speed = wire.spd;
+}
+function applySnap(sim, view, snap, selfId) {
+	const first = view.tick < 0;
+	view.tick = snap.tick;
+	view.host = snap.host;
+	sim.phase = snap.phase;
+	sim.sector = snap.sector;
+	sim.sectorName = snap.sectorName;
+	sim.score = snap.score;
+	sim.banner = snap.banner;
+	sim.bannerSub = snap.bannerSub;
+	sim.bannerT = snap.bannerT;
+	sim.hintT = snap.hintT;
+	sim.shake = snap.shake;
+	sim.beams = snap.beams ?? [];
+	sim.blooms = snap.blooms ?? [];
+	sim.pops = snap.pops ?? [];
+	const me = snap.ships.find((ship) => ship.id === selfId);
+	sim.coop = snap.ships.length > 1;
+	if (me) {
+		writeShip(sim.player, me, first);
+		sim.localDown = !me.alive;
+		view.pose.set("self", {
+			x: me.x,
+			z: me.z,
+			yaw: me.yaw,
+			spd: me.spd
+		});
+	}
+	const wings = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (const wire of snap.ships) {
+		if (wire.id === selfId) continue;
+		seen.add(wire.id);
+		let wing = view.wings.get(wire.id);
+		if (!wing) {
+			wing = {
+				id: wire.id,
+				name: wire.n,
+				color: wire.c,
+				alive: wire.alive,
+				ship: blankPlayer(),
+				input: idle()
+			};
+			view.wings.set(wire.id, wing);
+			writeShip(wing.ship, wire, true);
+		} else {
+			wing.name = wire.n;
+			wing.color = wire.c;
+			wing.alive = wire.alive;
+			writeShip(wing.ship, wire, false);
+		}
+		view.pose.set(wire.id, {
+			x: wire.x,
+			z: wire.z,
+			yaw: wire.yaw,
+			spd: wire.spd
+		});
+		wings.push(wing);
+	}
+	for (const id of view.wings.keys()) if (!seen.has(id)) view.wings.delete(id);
+	sim.wings = wings;
+	const keep = /* @__PURE__ */ new Set();
+	const ents = [];
+	for (const wire of snap.ents) {
+		keep.add(wire.id);
+		let ent = view.ents.get(wire.id);
+		const born = !ent;
+		if (!ent) {
+			ent = blankEnt(wire);
+			view.ents.set(wire.id, ent);
+		} else {
+			ent.kind = wire.k;
+			ent.y = wire.y;
+			ent.r = wire.r;
+			ent.hp = wire.hp;
+			ent.used = wire.used;
+			ent.flash = wire.flash;
+			ent.vx = wire.vx;
+			ent.vz = wire.vz;
+			ent.alive = true;
+		}
+		if (born || first) {
+			ent.x = wire.x;
+			ent.z = wire.z;
+			ent.yaw = wire.yaw;
+		}
+		view.pose.set(`e${wire.id}`, {
+			x: wire.x,
+			z: wire.z,
+			yaw: wire.yaw,
+			spd: 0
+		});
+		ents.push(ent);
+	}
+	for (const id of view.ents.keys()) if (!keep.has(id)) view.ents.delete(id);
+	sim.ents = ents;
+	if (snap.phase === "over" && sim.score > sim.best) {
+		sim.best = sim.score;
+		try {
+			localStorage.setItem("halcyon-ops-best", String(sim.best));
+		} catch {}
+	}
+}
+function easeAngle(from, to, k) {
+	return from + Math.atan2(Math.sin(to - from), Math.cos(to - from)) * k;
+}
+function relax(sim, view, dt) {
+	const k = 1 - Math.exp(-Math.min(.1, dt) * 16);
+	const self = view.pose.get("self");
+	if (self) {
+		sim.player.x += (self.x - sim.player.x) * k;
+		sim.player.z += (self.z - sim.player.z) * k;
+		sim.player.yaw = easeAngle(sim.player.yaw, self.yaw, k);
+		sim.player.speed += (self.spd - sim.player.speed) * k;
+	}
+	for (const wing of sim.wings) {
+		const pose = view.pose.get(wing.id);
+		if (!pose) continue;
+		wing.ship.x += (pose.x - wing.ship.x) * k;
+		wing.ship.z += (pose.z - wing.ship.z) * k;
+		wing.ship.yaw = easeAngle(wing.ship.yaw, pose.yaw, k);
+		wing.ship.speed += (pose.spd - wing.ship.speed) * k;
+	}
+	for (const ent of sim.ents) {
+		const pose = view.pose.get(`e${ent.id}`);
+		if (!pose) continue;
+		ent.x += (pose.x - ent.x) * k;
+		ent.z += (pose.z - ent.z) * k;
+		ent.yaw = easeAngle(ent.yaw, pose.yaw, k);
+	}
+}
+function ingest(bags, from, data) {
+	if (!data || typeof data !== "object") return;
+	const msg = data;
+	if (typeof msg.seq !== "number") return;
+	if (msg.op === "in") {
+		const steer = Number(data.steer) || 0;
+		const prev = bags.get(from);
+		if (prev && msg.seq < prev.seq) return;
+		bags.set(from, {
+			seq: msg.seq,
+			steer: Math.max(-1, Math.min(1, steer)),
+			impulse: !!data.impulse,
+			warp: !!data.warp,
+			spin: (prev?.spin ?? 0) + (Number(data.spin) || 0),
+			actSeq: prev?.actSeq ?? 0,
+			lance: prev?.lance ?? false,
+			burst: prev?.burst ?? false
+		});
+		return;
+	}
+	if (msg.op === "act") {
+		const prev = bags.get(from) ?? {
+			seq: 0,
+			steer: 0,
+			impulse: false,
+			warp: false,
+			spin: 0,
+			actSeq: 0,
+			lance: false,
+			burst: false
+		};
+		if (msg.seq <= prev.actSeq) return;
+		prev.actSeq = msg.seq;
+		if (data.lance) prev.lance = true;
+		if (data.burst) prev.burst = true;
+		bags.set(from, prev);
+	}
+}
+function applyHeld(sim, bags) {
+	for (const wing of sim.wings) {
+		const bag = bags.get(wing.id);
+		if (!bag) {
+			wing.input = idle();
+			continue;
+		}
+		wing.input = {
+			steer: bag.steer,
+			impulse: bag.impulse,
+			warp: bag.warp,
+			lance: bag.lance,
+			burst: bag.burst,
+			spin: bag.spin
+		};
+		bag.lance = false;
+		bag.burst = false;
+		bag.spin = 0;
+	}
+}
+function WingLink({ room, name, lead, netRef, simRef, onStatus }) {
+	const p2p = useP2PRoom({
+		room,
+		name
+	});
+	const peersRef = (0, import_react.useRef)(p2p.peers);
+	peersRef.current = p2p.peers;
+	const bags = (0, import_react.useRef)(/* @__PURE__ */ new Map());
+	const view = (0, import_react.useRef)(createGuestView());
+	const latest = (0, import_react.useRef)(null);
+	const evBuf = (0, import_react.useRef)([]);
+	const tick = (0, import_react.useRef)(0);
+	const lastPub = (0, import_react.useRef)(0);
+	const lastIn = (0, import_react.useRef)(0);
+	const seq = (0, import_react.useRef)(0);
+	const spinHold = (0, import_react.useRef)(0);
+	const actSeq = (0, import_react.useRef)(0);
+	const hostGone = (0, import_react.useRef)(false);
+	const miss = (0, import_react.useRef)(null);
+	const onStatusRef = (0, import_react.useRef)(onStatus);
+	onStatusRef.current = onStatus;
+	(0, import_react.useEffect)(() => p2p.onMessage((_from, data) => {
+		if (lead) {
+			ingest(bags.current, _from, data);
+			return;
+		}
+		if (isSnap(data)) latest.current = data;
+	}), [p2p.onMessage, lead]);
+	(0, import_react.useEffect)(() => {
+		onStatusRef.current({
+			joined: p2p.joined,
+			peers: p2p.peers,
+			hostGone: hostGone.current,
+			selfId: p2p.selfId
+		});
+	}, [
+		p2p.joined,
+		p2p.peers,
+		p2p.selfId
+	]);
+	(0, import_react.useEffect)(() => {
+		if (lead) return;
+		const host = latest.current?.host || view.current.host;
+		if (!host) return;
+		if (p2p.peers.some((peer) => peer.id === host && peer.connectionState === "connected")) {
+			miss.current = null;
+			hostGone.current = false;
+			return;
+		}
+		if (miss.current == null) miss.current = Date.now();
+		const timer = window.setTimeout(() => {
+			if (!miss.current || Date.now() - miss.current < 2500) return;
+			hostGone.current = true;
+			const sim = simRef.current;
+			if (sim) {
+				const best = sim.best;
+				const fresh = createSim();
+				fresh.best = best;
+				fresh.banner = "LEAD DROPPED";
+				Object.assign(sim, fresh);
+			}
+			onStatusRef.current({
+				joined: p2p.joined,
+				peers: p2p.peers,
+				hostGone: true,
+				selfId: p2p.selfId
+			});
+		}, 2800);
+		return () => window.clearTimeout(timer);
+	}, [
+		lead,
+		p2p.peers,
+		p2p.joined,
+		p2p.selfId,
+		simRef
+	]);
+	netRef.current = {
+		lead,
+		selfId: p2p.selfId,
+		roster: () => peersRef.current.filter((peer) => peer.connectionState === "connected").slice(0, 3).map((peer) => ({
+			id: peer.id,
+			name: peer.name || "WING"
+		})),
+		matching: () => {
+			const snap = latest.current;
+			return !hostGone.current && !!snap && snap.phase !== "title";
+		},
+		applyInputs: (sim) => applyHeld(sim, bags.current),
+		publish: (sim, events, now) => {
+			if (!lead || sim.phase === "title") return;
+			evBuf.current.push(...events);
+			if (now - lastPub.current < 50) return;
+			lastPub.current = now;
+			tick.current += 1;
+			p2p.broadcast(packSnap(sim, p2p.selfId, name, tick.current, evBuf.current.splice(0)));
+		},
+		follow: (sim, dt) => {
+			const snap = latest.current;
+			if (!snap || hostGone.current) return;
+			if (snap.tick !== view.current.tick) {
+				const ev = snap.ev ?? [];
+				applySnap(sim, view.current, snap, p2p.selfId);
+				if (ev.length) sim.events.push(...ev);
+			} else relax(sim, view.current, dt);
+		},
+		pushInput: (input, now) => {
+			spinHold.current += input.spin;
+			if (input.lance || input.burst) {
+				actSeq.current += 1;
+				p2p.send({
+					op: "act",
+					seq: actSeq.current,
+					lance: input.lance,
+					burst: input.burst
+				});
+			}
+			if (now - lastIn.current < 50) return;
+			lastIn.current = now;
+			seq.current += 1;
+			p2p.broadcast({
+				op: "in",
+				seq: seq.current,
+				steer: input.steer,
+				impulse: input.impulse,
+				warp: input.warp,
+				spin: spinHold.current
+			});
+			spinHold.current = 0;
+		}
+	};
+	(0, import_react.useEffect)(() => {
+		return () => {
+			netRef.current = null;
+		};
+	}, [netRef]);
+	return null;
+}
 function HalcyonOps() {
 	const canvasRef = (0, import_react.useRef)(null);
 	const simRef = (0, import_react.useRef)(null);
@@ -2232,6 +3379,20 @@ function HalcyonOps() {
 	const [best, setBest] = (0, import_react.useState)(0);
 	const [banner, setBanner] = (0, import_react.useState)("");
 	const [muted, setMuted] = (0, import_react.useState)(false);
+	const [call, setCall] = (0, import_react.useState)("OPS");
+	const [code, setCode] = (0, import_react.useState)("");
+	const [link, setLink] = (0, import_react.useState)(null);
+	const [netUi, setNetUi] = (0, import_react.useState)({
+		joined: false,
+		peers: [],
+		hostGone: false,
+		selfId: ""
+	});
+	const netRef = (0, import_react.useRef)(null);
+	const onStatus = (0, import_react.useCallback)((status) => {
+		setNetUi(status);
+		if (status.hostGone) setBanner("LEAD DROPPED");
+	}, []);
 	(0, import_react.useEffect)(() => {
 		const canvas = canvasRef.current;
 		if (!canvas) return;
@@ -2269,10 +3430,17 @@ function HalcyonOps() {
 			if (e.code === "Space" || e.code.startsWith("Arrow")) e.preventDefault();
 			keys.add(e.code);
 			if (e.code === "Escape") {
+				if (netRef.current) return;
 				if (sim.phase === "play") sim.phase = "pause";
 				else if (sim.phase === "pause") sim.phase = "play";
 			}
 			if (e.code === "Enter" && (sim.phase === "title" || sim.phase === "over")) {
+				const net = netRef.current;
+				if (net && !net.lead) return;
+				if (net?.lead) {
+					syncWings(sim, net.roster());
+					sim.coop = true;
+				}
 				startGame(sim);
 				setPhase("play");
 				setScore(0);
@@ -2333,20 +3501,32 @@ function HalcyonOps() {
 		const frame = (now) => {
 			const dt = Math.min(.1, (now - last) / 1e3);
 			last = now;
-			acc += dt;
-			const input = sample();
-			let first = true;
-			let steps = 0;
-			while (acc >= 1 / 60 && steps < 5) {
-				step(sim, {
-					...input,
-					lance: first && input.lance,
-					burst: first && input.burst,
-					spin: first ? input.spin : 0
-				}, 1 / 60);
-				first = false;
-				acc -= 1 / 60;
-				steps += 1;
+			const net = netRef.current;
+			if (net && !net.lead && net.matching()) {
+				const input = sample();
+				net.follow(sim, dt);
+				net.pushInput(input, now);
+			} else {
+				acc += dt;
+				if (net?.lead && sim.phase !== "title") {
+					syncWings(sim, net.roster());
+					net.applyInputs(sim);
+				}
+				const input = sample();
+				let first = true;
+				let steps = 0;
+				while (acc >= 1 / 60 && steps < 5) {
+					step(sim, {
+						...input,
+						lance: first && input.lance,
+						burst: first && input.burst,
+						spin: first ? input.spin : 0
+					}, 1 / 60);
+					first = false;
+					acc -= 1 / 60;
+					steps += 1;
+				}
+				if (net?.lead) net.publish(sim, sim.events.slice(), now);
 			}
 			sfx.setWarp(sim.phase === "play" && sim.player.warping && !sfx.muted);
 			if (sim.events.length) {
@@ -2393,203 +3573,345 @@ function HalcyonOps() {
 			delete window.__controlsTest;
 		};
 	}, []);
+	(0, import_react.useEffect)(() => {
+		try {
+			const saved = localStorage.getItem("halcyon-ops-call");
+			if (saved) setCall(saved.slice(0, 12));
+		} catch {}
+		setCode(makeCode());
+	}, []);
 	const begin = (button) => {
 		button?.blur();
 		sfxRef.current?.unlock();
 		const sim = simRef.current;
 		if (!sim) return;
 		if (sim.phase === "pause") {
+			if (netRef.current) return;
 			sim.phase = "play";
 			setPhase("play");
 			return;
+		}
+		const net = netRef.current;
+		if (net && !net.lead) return;
+		if (net?.lead) {
+			syncWings(sim, net.roster());
+			sim.coop = true;
 		}
 		startGame(sim);
 		setPhase("play");
 		setScore(0);
 	};
 	const playing = phase === "play" || phase === "clear";
+	const waiting = !!(link && !link.lead);
+	const openWing = (lead) => {
+		const clean = code.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+		if (clean.length < 4) return;
+		const name = (call.trim() || "OPS").toUpperCase().replace(/[^A-Z0-9 _-]/g, "").slice(0, 12) || "OPS";
+		try {
+			localStorage.setItem("halcyon-ops-call", name);
+		} catch {}
+		setLink({
+			room: `w${clean}`,
+			name,
+			lead,
+			code: clean
+		});
+	};
+	const leaveWing = () => {
+		const wasLead = link?.lead;
+		setLink(null);
+		const sim = simRef.current;
+		if (!sim) return;
+		if (wasLead) {
+			sim.coop = false;
+			sim.wings = [];
+		} else {
+			const bestScore = sim.best;
+			const fresh = createSim();
+			fresh.best = bestScore;
+			Object.assign(sim, fresh);
+			setPhase("title");
+			setScore(0);
+		}
+	};
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("main", {
 		className: "cabinet",
-		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-			className: "stage",
-			children: [
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("canvas", {
-					ref: canvasRef,
-					onPointerDown: (e) => {
-						if (phase !== "play") return;
-						const node = e.currentTarget;
-						node.setPointerCapture(e.pointerId);
-						const bag = node.__touch;
-						if (!bag) return;
-						bag.spin = bag.spin;
-						node.__drag = {
-							x: e.clientX,
-							moved: 0
-						};
-					},
-					onPointerMove: (e) => {
-						const node = e.currentTarget;
-						if (!node.__drag || !node.__touch) return;
-						const dx = e.clientX - node.__drag.x;
-						node.__drag.x = e.clientX;
-						node.__drag.moved += Math.abs(dx);
-						node.__touch.spin -= dx * .0055;
-					},
-					onPointerUp: (e) => {
-						const node = e.currentTarget;
-						if (node.__drag && node.__drag.moved < 6 && node.__touch && phase === "play") node.__touch.lance += 1;
-						node.__drag = void 0;
-					}
-				}),
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-					className: "sr-only",
-					"aria-live": "polite",
-					children: banner
-				}),
-				phase !== "play" && phase !== "clear" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-					className: "veil",
-					children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
-						className: "card",
+		children: [
+			link ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(WingLink, {
+				room: link.room,
+				name: link.name,
+				lead: link.lead,
+				netRef,
+				simRef,
+				onStatus
+			}, `${link.room}:${link.lead}:${link.name}`) : null,
+			/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+				className: "stage",
+				children: [
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("canvas", {
+						ref: canvasRef,
+						onPointerDown: (e) => {
+							if (phase !== "play") return;
+							const node = e.currentTarget;
+							node.setPointerCapture(e.pointerId);
+							const bag = node.__touch;
+							if (!bag) return;
+							bag.spin = bag.spin;
+							node.__drag = {
+								x: e.clientX,
+								moved: 0
+							};
+						},
+						onPointerMove: (e) => {
+							const node = e.currentTarget;
+							if (!node.__drag || !node.__touch) return;
+							const dx = e.clientX - node.__drag.x;
+							node.__drag.x = e.clientX;
+							node.__drag.moved += Math.abs(dx);
+							node.__touch.spin -= dx * .0055;
+						},
+						onPointerUp: (e) => {
+							const node = e.currentTarget;
+							if (node.__drag && node.__drag.moved < 6 && node.__touch && phase === "play") node.__touch.lance += 1;
+							node.__drag = void 0;
+						}
+					}),
+					playing && link ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+						className: "wing-pill",
 						children: [
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
-								className: "wordmark",
-								children: "HALCYON OPS"
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-								className: "subhead",
-								children: "Strategic Operations Simulator"
-							}),
-							phase === "over" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-								className: "blurb",
-								children: [
-									"Hull lost in ",
-									banner || "the sector",
-									". Score ",
-									formatScore(score),
-									". One cruiser is all you get — dock sooner, spend the burst, save the warp for the knife-fight."
-								]
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "engage",
-								onClick: (e) => begin(e.currentTarget),
-								children: "Start"
-							})] }) : phase === "pause" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-								className: "blurb",
-								children: "Holding position. The sector does not wait forever."
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "engage",
-								onClick: (e) => begin(e.currentTarget),
-								children: "Resume"
-							})] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
-								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-									className: "blurb",
-									children: "One cruiser, color-vector sectors. Red blips raid the anchors. Violet hunts you. Cyan saucers pulse. Amber relics lay mines. Dock an anchor once to rearm."
+							link.lead ? "LEAD" : "WING",
+							" ",
+							link.code,
+							" · ",
+							1 + netUi.peers.filter((peer) => peer.connectionState === "connected").length
+						]
+					}) : null,
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+						className: "sr-only",
+						"aria-live": "polite",
+						children: banner
+					}),
+					phase !== "play" && phase !== "clear" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+						className: "veil",
+						children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
+							className: "card",
+							children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", {
+									className: "wordmark",
+									children: "HALCYON OPS"
 								}),
-								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "keys",
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+									className: "subhead",
+									children: "Strategic Operations Simulator"
+								}),
+								phase === "over" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+									className: "blurb",
 									children: [
-										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: "A / D" }), " or drag — heading"] }),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: "W" }), " — impulse, hold"] }),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: "Shift" }), " — warp, untouchable while it lasts"] }),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: "Space" }), " or click — lance, one target"] }),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: "F" }), " — burst shell, then it blooms"] })
+										"Hull lost in ",
+										banner || "the sector",
+										". Score ",
+										formatScore(score),
+										".",
+										link && !link.lead ? " The lead can launch the wing again." : " Dock sooner, spend the burst, save the warp for the knife-fight."
 									]
-								}),
-								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-									className: "blurb",
-									children: "Damage order: shields, then shells, then warp."
-								}),
-								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								}), link && !link.lead ? null : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 									type: "button",
 									className: "engage",
 									onClick: (e) => begin(e.currentTarget),
-									children: "Start"
+									children: link?.lead ? "Launch wing" : "Start"
+								})] }) : phase === "pause" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+									className: "blurb",
+									children: "Holding position. The sector does not wait forever."
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+									type: "button",
+									className: "engage",
+									onClick: (e) => begin(e.currentTarget),
+									children: "Resume"
+								})] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+										className: "blurb",
+										children: netUi.hostGone ? "The wing lead dropped. Open the channel again, or fly the sector alone." : "Share a wing code with one to three other cruisers, or start alone. The host launches. Everyone flies the same sector."
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+										className: "keysline",
+										children: "A/D turn · W impulse · Shift warp · Space lance · F burst"
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+										className: "blurb",
+										children: "Shields, then shells, then warp. The wing shares one score."
+									}),
+									waiting ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+										className: "blurb",
+										children: [
+											"Channel ",
+											link?.code,
+											" is open. The lead launches. You fly as soon as the sector starts."
+										]
+									}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										className: "engage",
+										onClick: (e) => begin(e.currentTarget),
+										children: link?.lead ? "Launch wing" : "Start"
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "wing",
+										children: [
+											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: ["Callsign", /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+												value: call,
+												maxLength: 12,
+												autoCapitalize: "characters",
+												disabled: !!link,
+												onChange: (e) => setCall(e.target.value.toUpperCase())
+											})] }),
+											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: ["Wing code", /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+												value: code,
+												maxLength: 4,
+												autoCapitalize: "characters",
+												spellCheck: false,
+												disabled: !!link,
+												onChange: (e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4))
+											})] }),
+											link ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+													className: "best",
+													children: [
+														netUi.joined ? "CHANNEL OPEN" : "LINKING",
+														" · ",
+														link.code,
+														link.lead ? " · YOU LEAD" : " · JOINED"
+													]
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("ul", {
+													className: "roster",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", {
+														className: "ok",
+														children: ["You · ", link.name]
+													}), netUi.peers.map((peer) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", {
+														className: peer.connectionState === "connected" ? "ok" : peer.connectionState === "failed" ? "bad" : "",
+														children: [
+															(peer.name || "WING").slice(0, 12),
+															" · ",
+															peer.connectionState,
+															typeof peer.rttMs === "number" ? ` · ${peer.rttMs}ms` : ""
+														]
+													}, peer.id))]
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+													type: "button",
+													className: "leave",
+													onClick: leaveWing,
+													children: "Leave channel"
+												})
+											] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "wing-actions",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+													type: "button",
+													className: "engage ghost",
+													disabled: code.length < 4,
+													onClick: () => openWing(true),
+													children: "Host"
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+													type: "button",
+													className: "engage ghost",
+													disabled: code.length < 4,
+													onClick: () => openWing(false),
+													children: "Join"
+												})]
+											})
+										]
+									})
+								] }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+									className: "best",
+									children: ["BEST ", formatScore(best)]
 								})
-							] }),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-								className: "best",
-								children: ["BEST ", formatScore(best)]
-							})
-						]
+							]
+						})
+					}) : null,
+					playing && !link ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: "icon-btn pause",
+						"aria-label": "Pause",
+						onClick: () => {
+							const sim = simRef.current;
+							if (!sim || sim.phase !== "play") return;
+							sim.phase = "pause";
+							setPhase("pause");
+						},
+						children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Pause, { size: 18 })
+					}) : null,
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: "icon-btn mute",
+						"aria-label": muted ? "Unmute" : "Mute",
+						onClick: () => {
+							const sfx = sfxRef.current;
+							if (!sfx) return;
+							sfx.unlock();
+							sfx.setMuted(!sfx.muted);
+							setMuted(sfx.muted);
+						},
+						children: muted ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(VolumeX, { size: 18 }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Volume2, { size: 18 })
 					})
-				}) : null,
-				playing ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-					type: "button",
-					className: "icon-btn pause",
-					"aria-label": "Pause",
-					onClick: () => {
-						const sim = simRef.current;
-						if (!sim || sim.phase !== "play") return;
-						sim.phase = "pause";
-						setPhase("pause");
-					},
-					children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Pause, { size: 18 })
-				}) : null,
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-					type: "button",
-					className: "icon-btn mute",
-					"aria-label": muted ? "Unmute" : "Mute",
-					onClick: () => {
-						const sfx = sfxRef.current;
-						if (!sfx) return;
-						sfx.unlock();
-						sfx.setMuted(!sfx.muted);
-						setMuted(sfx.muted);
-					},
-					children: muted ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(VolumeX, { size: 18 }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Volume2, { size: 18 })
-				})
-			]
-		}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-			className: `touchbar${playing ? " is-live" : ""}`,
-			children: [
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Hold, {
-					label: "LEFT",
-					hot: true,
-					which: "left",
-					canvasRef
-				}),
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Hold, {
-					label: "RIGHT",
-					which: "right",
-					canvasRef
-				}),
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Hold, {
-					label: "IMPULSE",
-					hot: true,
-					which: "impulse",
-					canvasRef
-				}),
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Hold, {
-					label: "WARP",
-					which: "warp",
-					canvasRef
-				}),
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-					type: "button",
-					className: "pad wide hot",
-					onPointerDown: (e) => {
-						e.preventDefault();
-						sfxRef.current?.unlock();
-						const bag = bagOf(canvasRef.current);
-						if (bag) bag.lance += 1;
-					},
-					children: "LANCE"
-				}),
-				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-					type: "button",
-					className: "pad wide accent",
-					onPointerDown: (e) => {
-						e.preventDefault();
-						sfxRef.current?.unlock();
-						const bag = bagOf(canvasRef.current);
-						if (bag) bag.burst += 1;
-					},
-					children: "BURST"
-				})
-			]
-		})]
+				]
+			}),
+			/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+				className: `touchbar${playing ? " is-live" : ""}`,
+				children: [
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Hold, {
+						label: "LEFT",
+						hot: true,
+						which: "left",
+						canvasRef
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Hold, {
+						label: "RIGHT",
+						which: "right",
+						canvasRef
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Hold, {
+						label: "IMPULSE",
+						hot: true,
+						which: "impulse",
+						canvasRef
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Hold, {
+						label: "WARP",
+						which: "warp",
+						canvasRef
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: "pad wide hot",
+						onPointerDown: (e) => {
+							e.preventDefault();
+							sfxRef.current?.unlock();
+							const bag = bagOf(canvasRef.current);
+							if (bag) bag.lance += 1;
+						},
+						children: "LANCE"
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: "pad wide accent",
+						onPointerDown: (e) => {
+							e.preventDefault();
+							sfxRef.current?.unlock();
+							const bag = bagOf(canvasRef.current);
+							if (bag) bag.burst += 1;
+						},
+						children: "BURST"
+					})
+				]
+			})
+		]
 	});
+}
+function makeCode() {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+	let code = "";
+	for (let i = 0; i < 4; i++) code += alphabet[Math.floor(Math.random() * 32)];
+	return code;
 }
 function bagOf(canvas) {
 	return canvas?.__touch;

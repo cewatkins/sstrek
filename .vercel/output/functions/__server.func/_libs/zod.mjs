@@ -1012,7 +1012,7 @@ function datetime(args) {
 	return new RegExp(`^${dateSource}T(?:${timeRegex})$`);
 }
 var anyString = /^[\s\S]{0,}$/;
-var number$1 = /^-?\d+(?:\.\d+)?$/;
+var number$2 = /^-?\d+(?:\.\d+)?$/;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 //#endregion
@@ -1794,7 +1794,7 @@ var $ZodJWT = /*@__PURE__*/ $constructor("$ZodJWT", (inst, def) => {
 });
 var $ZodNumber = /*@__PURE__*/ $constructor("$ZodNumber", (inst, def) => {
 	$ZodType.init(inst, def);
-	inst._zod.pattern = number$1;
+	inst._zod.pattern = number$2;
 	inst._zod.parse = (payload, _ctx) => {
 		if (def.coerce) try {
 			payload.value = Number(payload.value);
@@ -2194,6 +2194,70 @@ var $ZodUnion = /*@__PURE__*/ $constructor("$ZodUnion", (inst, def) => {
 		return Promise.all(results).then((results) => {
 			return handleUnionResults(results, payload, inst, ctx);
 		});
+	};
+});
+function discriminatorMap(def) {
+	const map = /* @__PURE__ */ new Map();
+	for (const option of def.options) {
+		const values = option._zod.propValues?.[def.discriminator];
+		if (!values || values.size === 0) throw new Error(`Invalid discriminated union option at index "${def.options.indexOf(option)}"`);
+		for (const value of values) if (map.has(value)) {
+			if (value !== void 0) throw new Error(`Duplicate discriminator value "${String(value)}"`);
+			map.set(value, null);
+		} else map.set(value, option);
+	}
+	return map;
+}
+var $ZodDiscriminatedUnion = /*@__PURE__*/ $constructor("$ZodDiscriminatedUnion", (inst, def) => {
+	def.inclusive = false;
+	$ZodUnion.init(inst, def);
+	const _super = inst._zod.parse;
+	defineLazyInternal(inst, "propValues", (zod) => {
+		const propValues = {};
+		let undefinedCount = 0;
+		for (const option of zod.def.options) {
+			const pv = option._zod.propValues;
+			if (!pv || Object.keys(pv).length === 0) throw new Error(`Invalid discriminated union option at index "${zod.def.options.indexOf(option)}"`);
+			if (pv[zod.def.discriminator]?.has(void 0)) undefinedCount++;
+			for (const [k, v] of Object.entries(pv)) {
+				if (!Object.prototype.hasOwnProperty.call(propValues, k)) assignProp(propValues, k, /* @__PURE__ */ new Set());
+				for (const val of v) propValues[k].add(val);
+			}
+		}
+		if (!zod.def.unionFallback && undefinedCount > 1) propValues[zod.def.discriminator]?.delete(void 0);
+		return propValues;
+	});
+	def.options.forEach((option, i) => {
+		const propShape = rawShape(option._zod.def);
+		if (propShape && !Object.prototype.hasOwnProperty.call(propShape, def.discriminator)) throw new Error(`Invalid discriminated union option at index "${i}"`);
+	});
+	const disc = cached(() => discriminatorMap(def));
+	inst._zod.parse = (payload, ctx) => {
+		const input = payload.value;
+		if (!isObject(input)) {
+			payload.issues.push({
+				code: "invalid_type",
+				expected: "object",
+				input,
+				inst
+			});
+			return payload;
+		}
+		const value = input?.[def.discriminator];
+		const opt = disc.value.get(value);
+		if (opt && (value !== void 0 || ctx.direction !== "backward")) return opt._zod.run(payload, ctx);
+		if (def.unionFallback || ctx.direction === "backward") return _super(payload, ctx);
+		payload.issues.push({
+			code: "invalid_union",
+			errors: [],
+			note: "No matching discriminator",
+			discriminator: def.discriminator,
+			options: Array.from(disc.value.keys()).filter((value) => disc.value.get(value) !== null),
+			input,
+			path: [def.discriminator],
+			inst
+		});
+		return payload;
 	};
 });
 var $ZodIntersection = /*@__PURE__*/ $constructor("$ZodIntersection", (inst, def) => {
@@ -3265,6 +3329,15 @@ function _isoDuration(Class, params) {
 function _number(Class, params) {
 	return new Class(snapshotChecks({
 		type: "number",
+		checks: [],
+		...normalizeParams(params)
+	}));
+}
+// @__NO_SIDE_EFFECTS__
+function _coercedNumber(Class, params) {
+	return new Class(snapshotChecks({
+		type: "number",
+		coerce: true,
 		checks: [],
 		...normalizeParams(params)
 	}));
@@ -4820,7 +4893,7 @@ var ZodNumber = /*@__PURE__*/ $constructor("ZodNumber", (inst, def) => {
 		return this;
 	}
 }));
-function number(params) {
+function number$1(params) {
 	return /* @__PURE__ */ _number(ZodNumber, params);
 }
 var ZodNumberFormat = /*@__PURE__*/ $constructor("ZodNumberFormat", (inst, def) => {
@@ -4939,6 +5012,18 @@ function union(options, params) {
 	return new ZodUnion({
 		type: "union",
 		options,
+		...normalizeParams(params)
+	});
+}
+var ZodDiscriminatedUnion = /*@__PURE__*/ $constructor("ZodDiscriminatedUnion", (inst, def) => {
+	ZodUnion.init(inst, def);
+	$ZodDiscriminatedUnion.init(inst, def);
+});
+function discriminatedUnion(discriminator, options, params) {
+	return new ZodDiscriminatedUnion({
+		type: "union",
+		options,
+		discriminator,
 		...normalizeParams(params)
 	});
 }
@@ -5173,4 +5258,9 @@ function superRefine(fn, params) {
 	return /* @__PURE__ */ _superRefine(fn, params);
 }
 //#endregion
-export { union as a, string as i, number as n, object as r, literal as t };
+//#region node_modules/zod/v4/classic/coerce.js
+function number(params) {
+	return /* @__PURE__ */ _coercedNumber(ZodNumber, params);
+}
+//#endregion
+export { number$1 as a, union as c, literal as i, unknown as l, _enum as n, object as o, discriminatedUnion as r, string as s, number as t };

@@ -77,9 +77,19 @@ interface PeerSlot {
 const FAST_POLL_MS = 400;
 const IDLE_POLL_MS = 2000;
 const PING_INTERVAL_MS = 2000;
+import { previewPathPrefix } from "@/lib/preview-path-prefix";
+
 const STALL_MS = 10_000;
 const MAX_RECOVERY_ATTEMPTS = 3;
 const SIGNAL_RETRY_DELAYS_MS = [250, 750];
+
+function rtcUrl(search = ""): string {
+  const prefix =
+    typeof window === "undefined"
+      ? ""
+      : (previewPathPrefix(window.location.hostname, window.location.pathname) ?? "");
+  return `${prefix}/api/rtc${search}`;
+}
 
 export function defaultIceServers(): RTCIceServer[] {
   const urls = (import.meta.env.VITE_STUN_URLS as string | undefined)
@@ -138,7 +148,7 @@ export class P2PRoom {
     this.peers.clear();
     // Leaving the roster is the teardown broadcast: everyone's next poll
     // drops this peer and closes their side of the pair.
-    void fetch("/api/rtc", {
+    void fetch(rtcUrl(), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ op: "leave", room: this.opts.room, peer: this.opts.selfId }),
@@ -192,7 +202,7 @@ export class P2PRoom {
       name: this.opts.name ?? "",
       since: String(this.cursor),
     });
-    const res = await fetch(`/api/rtc?${params}`);
+    const res = await fetch(rtcUrl(`?${params}`));
     if (this.closed) return;
     if (!res.ok) throw new Error(`signaling poll failed: ${res.status}`);
     const body = (await res.json()) as RtcPollResponse;
@@ -448,7 +458,7 @@ export class P2PRoom {
     for (let attempt = 0; ; attempt++) {
       if (this.closed) return;
       try {
-        const res = await fetch("/api/rtc", {
+        const res = await fetch(rtcUrl(), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
