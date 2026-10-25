@@ -493,7 +493,11 @@ function drawViewer(ctx: CanvasRenderingContext2D, sim: Sim, r: Rect): void {
       ctx.fillStyle = "#8aa396";
       ctx.font = `400 ${Math.max(11, r.w * 0.022)}px "Share Tech Mono", ui-monospace, monospace`;
       ctx.textAlign = "center";
-      ctx.fillText("W MOVE   ·   SPACE LANCE   ·   F BURST   ·   SHIFT WARP", cx, r.y + r.h - 16);
+      ctx.fillText(
+        r.w < 560 ? "DRAG TURNS  ·  LANCE  ·  BURST  ·  WARP" : "W MOVE   ·   SPACE LANCE   ·   F BURST   ·   SHIFT WARP",
+        cx,
+        r.y + r.h - 16,
+      );
       ctx.textAlign = "left";
       ctx.globalAlpha = 1;
     }
