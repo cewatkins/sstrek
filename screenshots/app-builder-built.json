@@ -7,9 +7,9 @@
       "status": 200,
       "title": "Halcyon Ops",
       "hasCanvas": true,
-      "bodyTextLen": 326,
-      "bodyTextHash": "ae3275135d1bd4a30e51c8b0d34ff0eda90b96aff117d0a41bf7749b16beeaa7",
-      "bodyTextPrefix": "HALCYON OPS STRATEGIC OPERATIONS SIMULATOR Share a wing code wit",
+      "bodyTextLen": 246,
+      "bodyTextHash": "598da88bc158c3f69c012d82c4114aea89db8bc37b4fc8e9df498cc79180c6fc",
+      "bodyTextPrefix": "HALCYON OPS STRATEGIC OPERATIONS SIMULATOR Host a wing and copy ",
       "horizontalOverflow": false,
       "consoleErrors": [],
       "pageErrors": [],
@@ -21,9 +21,9 @@
       "status": 200,
       "title": "Halcyon Ops",
       "hasCanvas": true,
-      "bodyTextLen": 326,
-      "bodyTextHash": "ae3275135d1bd4a30e51c8b0d34ff0eda90b96aff117d0a41bf7749b16beeaa7",
-      "bodyTextPrefix": "HALCYON OPS STRATEGIC OPERATIONS SIMULATOR Share a wing code wit",
+      "bodyTextLen": 246,
+      "bodyTextHash": "598da88bc158c3f69c012d82c4114aea89db8bc37b4fc8e9df498cc79180c6fc",
+      "bodyTextPrefix": "HALCYON OPS STRATEGIC OPERATIONS SIMULATOR Host a wing and copy ",
       "horizontalOverflow": false,
       "consoleErrors": [],
       "pageErrors": [],
@@ -33,9 +33,6 @@
   "brandWarnings": [],
   "authWarnings": [],
   "verdictFile": "/workspace/screenshots/app-builder-built.json",
-  "divergesFromBaseline": true,
-  "baselineReasons": [
-    "desktop: body text changed (418 -> 326 chars, hash mismatch)",
-    "mobile: body text changed (418 -> 326 chars, hash mismatch)"
-  ]
+  "divergesFromBaseline": false,
+  "baselineReasons": []
 }

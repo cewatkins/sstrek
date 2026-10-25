@@ -1,8 +1,8 @@
 import { o as __toESM } from "../_runtime.mjs";
 import { K as require_react, b as require_jsx_runtime } from "../_libs/@tanstack/react-router+[...].mjs";
 import { i as Pause, n as Volume2, t as VolumeX } from "../_libs/lucide-react.mjs";
-import { n as previewPathPrefix } from "./router-BYvo-4a2.mjs";
-//#region node_modules/.nitro/vite/services/ssr/assets/routes-Co4Bq_bE.js
+import { n as previewPathPrefix } from "./router-CTiIOjVM.mjs";
+//#region node_modules/.nitro/vite/services/ssr/assets/routes-BBlfvY9n.js
 var import_react = /* @__PURE__ */ __toESM(require_react());
 var import_jsx_runtime = require_jsx_runtime();
 /** Short synthesized cabinet voices. Unlocked from a user gesture. */
@@ -3236,7 +3236,7 @@ function applyHeld(sim, bags) {
 function WingLink({ room, name, lead, netRef, simRef, onStatus }) {
 	const p2p = useP2PRoom({
 		room,
-		name
+		name: lead ? `!${name}` : name
 	});
 	const peersRef = (0, import_react.useRef)(p2p.peers);
 	peersRef.current = p2p.peers;
@@ -3251,7 +3251,9 @@ function WingLink({ room, name, lead, netRef, simRef, onStatus }) {
 	const spinHold = (0, import_react.useRef)(0);
 	const actSeq = (0, import_react.useRef)(0);
 	const hostGone = (0, import_react.useRef)(false);
+	const sawLead = (0, import_react.useRef)(false);
 	const miss = (0, import_react.useRef)(null);
+	const greeted = (0, import_react.useRef)(/* @__PURE__ */ new Set());
 	const onStatusRef = (0, import_react.useRef)(onStatus);
 	onStatusRef.current = onStatus;
 	(0, import_react.useEffect)(() => p2p.onMessage((_from, data) => {
@@ -3259,7 +3261,7 @@ function WingLink({ room, name, lead, netRef, simRef, onStatus }) {
 			ingest(bags.current, _from, data);
 			return;
 		}
-		if (isSnap(data)) latest.current = data;
+		if (isSnap(data) && (!latest.current || data.tick > latest.current.tick)) latest.current = data;
 	}), [p2p.onMessage, lead]);
 	(0, import_react.useEffect)(() => {
 		onStatusRef.current({
@@ -3274,14 +3276,46 @@ function WingLink({ room, name, lead, netRef, simRef, onStatus }) {
 		p2p.selfId
 	]);
 	(0, import_react.useEffect)(() => {
+		if (!lead) return;
+		const live = p2p.peers.filter((peer) => peer.connectionState === "connected");
+		const ids = new Set(live.map((peer) => peer.id));
+		for (const id of greeted.current) if (!ids.has(id)) greeted.current.delete(id);
+		const sim = simRef.current;
+		if (!sim || sim.phase === "title") return;
+		for (const peer of live) {
+			if (greeted.current.has(peer.id)) continue;
+			greeted.current.add(peer.id);
+			tick.current += 1;
+			p2p.send(packSnap(sim, p2p.selfId, name, tick.current, []), peer.id);
+		}
+	}, [
+		lead,
+		name,
+		p2p.peers,
+		p2p.selfId,
+		p2p.send,
+		simRef
+	]);
+	(0, import_react.useEffect)(() => {
 		if (lead) return;
+		const marked = p2p.peers.some((peer) => peer.name.startsWith("!") && peer.connectionState === "connected");
 		const host = latest.current?.host || view.current.host;
-		if (!host) return;
-		if (p2p.peers.some((peer) => peer.id === host && peer.connectionState === "connected")) {
+		const hostUp = !!host && p2p.peers.some((peer) => peer.id === host && peer.connectionState === "connected");
+		if (marked || hostUp) {
+			sawLead.current = true;
 			miss.current = null;
-			hostGone.current = false;
+			if (hostGone.current) {
+				hostGone.current = false;
+				onStatusRef.current({
+					joined: p2p.joined,
+					peers: p2p.peers,
+					hostGone: false,
+					selfId: p2p.selfId
+				});
+			}
 			return;
 		}
+		if (!sawLead.current) return;
 		if (miss.current == null) miss.current = Date.now();
 		const timer = window.setTimeout(() => {
 			if (!miss.current || Date.now() - miss.current < 2500) return;
@@ -3314,7 +3348,7 @@ function WingLink({ room, name, lead, netRef, simRef, onStatus }) {
 		selfId: p2p.selfId,
 		roster: () => peersRef.current.filter((peer) => peer.connectionState === "connected").slice(0, 3).map((peer) => ({
 			id: peer.id,
-			name: peer.name || "WING"
+			name: (peer.name || "WING").replace(/^!/, "") || "WING"
 		})),
 		matching: () => {
 			const snap = latest.current;
@@ -3332,7 +3366,7 @@ function WingLink({ room, name, lead, netRef, simRef, onStatus }) {
 		follow: (sim, dt) => {
 			const snap = latest.current;
 			if (!snap || hostGone.current) return;
-			if (snap.tick !== view.current.tick) {
+			if (snap.tick > view.current.tick) {
 				const ev = snap.ev ?? [];
 				applySnap(sim, view.current, snap, p2p.selfId);
 				if (ev.length) sim.events.push(...ev);
@@ -3388,6 +3422,8 @@ function HalcyonOps() {
 		hostGone: false,
 		selfId: ""
 	});
+	const [note, setNote] = (0, import_react.useState)("");
+	const [copied, setCopied] = (0, import_react.useState)("");
 	const netRef = (0, import_react.useRef)(null);
 	const onStatus = (0, import_react.useCallback)((status) => {
 		setNetUi(status);
@@ -3503,6 +3539,7 @@ function HalcyonOps() {
 			last = now;
 			const net = netRef.current;
 			if (net && !net.lead && net.matching()) {
+				sim.t += dt;
 				const input = sample();
 				net.follow(sim, dt);
 				net.pushInput(input, now);
@@ -3549,6 +3586,14 @@ function HalcyonOps() {
 			window.__controlsTest = {
 				getYaw: () => sim.player.yaw,
 				getSpeed: () => sim.player.speed,
+				getPhase: () => sim.phase,
+				getWings: () => sim.wings.map((wing) => ({
+					id: wing.id,
+					x: wing.ship.x,
+					z: wing.ship.z,
+					yaw: wing.ship.yaw,
+					spd: wing.ship.speed
+				})),
 				setKeys: (codes) => {
 					injected.clear();
 					for (const code of codes) injected.add(code);
@@ -3574,12 +3619,46 @@ function HalcyonOps() {
 		};
 	}, []);
 	(0, import_react.useEffect)(() => {
+		let saved = "OPS";
 		try {
-			const saved = localStorage.getItem("halcyon-ops-call");
-			if (saved) setCall(saved.slice(0, 12));
+			const raw = localStorage.getItem("halcyon-ops-call");
+			if (raw) saved = raw.slice(0, 12);
 		} catch {}
+		const name = cleanCall(saved);
+		setCall(name);
+		const fromUrl = cleanCode(new URLSearchParams(window.location.search).get("w") ?? "");
+		if (fromUrl.length === 4) {
+			let lead = false;
+			try {
+				lead = sessionStorage.getItem(LEAD_KEY) === fromUrl;
+			} catch {}
+			setCode(fromUrl);
+			setLink({
+				room: `w${fromUrl}`,
+				name,
+				lead,
+				code: fromUrl
+			});
+			return;
+		}
 		setCode(makeCode());
 	}, []);
+	(0, import_react.useEffect)(() => {
+		if (!link?.lead || !netUi.selfId) return;
+		if (!netUi.peers.some((peer) => peer.name.startsWith("!") && peer.id < netUi.selfId)) return;
+		try {
+			if (sessionStorage.getItem(LEAD_KEY) === link.code) sessionStorage.removeItem(LEAD_KEY);
+		} catch {}
+		setNote("This wing already has a lead. You're flying with them.");
+		setLink({
+			...link,
+			lead: false
+		});
+	}, [
+		link,
+		netUi.peers,
+		netUi.selfId
+	]);
 	const begin = (button) => {
 		button?.blur();
 		sfxRef.current?.unlock();
@@ -3603,13 +3682,36 @@ function HalcyonOps() {
 	};
 	const playing = phase === "play" || phase === "clear";
 	const waiting = !!(link && !link.lead);
+	const [alone, setAlone] = (0, import_react.useState)(false);
+	(0, import_react.useEffect)(() => {
+		if (!link || link.lead || !netUi.joined || netUi.peers.length > 0) {
+			setAlone(false);
+			return;
+		}
+		const timer = window.setTimeout(() => setAlone(true), 2e3);
+		return () => window.clearTimeout(timer);
+	}, [
+		link,
+		netUi.joined,
+		netUi.peers.length
+	]);
+	const canTake = !!link && !link.lead && (netUi.hostGone || alone);
+	const wingCount = 1 + netUi.peers.filter((peer) => peer.connectionState === "connected").length;
 	const openWing = (lead) => {
-		const clean = code.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+		const clean = cleanCode(code);
 		if (clean.length < 4) return;
-		const name = (call.trim() || "OPS").toUpperCase().replace(/[^A-Z0-9 _-]/g, "").slice(0, 12) || "OPS";
+		const name = cleanCall(call);
 		try {
 			localStorage.setItem("halcyon-ops-call", name);
 		} catch {}
+		try {
+			if (lead) sessionStorage.setItem(LEAD_KEY, clean);
+			else if (sessionStorage.getItem(LEAD_KEY) === clean) sessionStorage.removeItem(LEAD_KEY);
+		} catch {}
+		writeWingUrl(clean);
+		setCode(clean);
+		setCall(name);
+		setNote("");
 		setLink({
 			room: `w${clean}`,
 			name,
@@ -3619,7 +3721,14 @@ function HalcyonOps() {
 	};
 	const leaveWing = () => {
 		const wasLead = link?.lead;
+		const codeLeft = link?.code;
 		setLink(null);
+		setNote("");
+		setCopied("");
+		try {
+			if (sessionStorage.getItem(LEAD_KEY) === codeLeft) sessionStorage.removeItem(LEAD_KEY);
+		} catch {}
+		clearWingUrl();
 		const sim = simRef.current;
 		if (!sim) return;
 		if (wasLead) {
@@ -3633,6 +3742,32 @@ function HalcyonOps() {
 			setPhase("title");
 			setScore(0);
 		}
+	};
+	const copyLink = () => {
+		if (!link) return;
+		const url = wingUrl(link.code);
+		const done = (value) => {
+			setCopied(value);
+			window.setTimeout(() => setCopied(""), 2200);
+		};
+		if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url).then(() => done("copied")).catch(() => done(url));
+		else done(url);
+	};
+	const takeLead = () => {
+		if (!link) return;
+		try {
+			sessionStorage.setItem(LEAD_KEY, link.code);
+		} catch {}
+		writeWingUrl(link.code);
+		setNetUi((status) => ({
+			...status,
+			hostGone: false
+		}));
+		setNote("");
+		setLink({
+			...link,
+			lead: true
+		});
 	};
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("main", {
 		className: "cabinet",
@@ -3676,15 +3811,11 @@ function HalcyonOps() {
 							node.__drag = void 0;
 						}
 					}),
-					playing && link ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+					playing && link ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
 						className: "wing-pill",
-						children: [
-							link.lead ? "LEAD" : "WING",
-							" ",
-							link.code,
-							" · ",
-							1 + netUi.peers.filter((peer) => peer.connectionState === "connected").length
-						]
+						onClick: copyLink,
+						children: copied === "copied" ? "LINK COPIED" : `${link.lead ? "LEAD" : "WING"} ${link.code} · ${wingCount} · COPY`
 					}) : null,
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 						className: "sr-only",
@@ -3704,22 +3835,36 @@ function HalcyonOps() {
 									className: "subhead",
 									children: "Strategic Operations Simulator"
 								}),
-								phase === "over" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-									className: "blurb",
-									children: [
-										"Hull lost in ",
-										banner || "the sector",
-										". Score ",
-										formatScore(score),
-										".",
-										link && !link.lead ? " The lead can launch the wing again." : " Dock sooner, spend the burst, save the warp for the knife-fight."
-									]
-								}), link && !link.lead ? null : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-									type: "button",
-									className: "engage",
-									onClick: (e) => begin(e.currentTarget),
-									children: link?.lead ? "Launch wing" : "Start"
-								})] }) : phase === "pause" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+								phase === "over" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+										className: "blurb",
+										children: [
+											"Hull lost in ",
+											banner || "the sector",
+											". Score ",
+											formatScore(score),
+											".",
+											link && !link.lead ? " The lead can launch the wing again." : " Dock sooner, spend the burst, save the warp for the knife-fight."
+										]
+									}),
+									link && !link.lead ? canTake ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										className: "engage",
+										onClick: takeLead,
+										children: "Take the lead"
+									}) : null : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										className: "engage",
+										onClick: (e) => begin(e.currentTarget),
+										children: link?.lead ? "Launch wing" : "Start"
+									}),
+									link ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(WingShare, {
+										copied,
+										code: link.code,
+										onCopy: copyLink,
+										onLeave: leaveWing
+									}) : null
+								] }) : phase === "pause" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 									className: "blurb",
 									children: "Holding position. The sector does not wait forever."
 								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
@@ -3730,22 +3875,18 @@ function HalcyonOps() {
 								})] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
 									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 										className: "blurb",
-										children: netUi.hostGone ? "The wing lead dropped. Open the channel again, or fly the sector alone." : "Share a wing code with one to three other cruisers, or start alone. The host launches. Everyone flies the same sector."
+										children: note ? note : netUi.hostGone ? "The wing lead dropped. Take the lead, or leave and fly alone." : "Host a wing and copy the link. Up to four cruisers share one sector and one score. Or start alone."
 									}),
 									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 										className: "keysline",
 										children: "A/D turn · W impulse · Shift warp · Space lance · F burst"
 									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-										className: "blurb",
-										children: "Shields, then shells, then warp. The wing shares one score."
-									}),
 									waiting ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
 										className: "blurb",
 										children: [
-											"Channel ",
+											"Wing ",
 											link?.code,
-											" is open. The lead launches. You fly as soon as the sector starts."
+											" is open. The lead launches. You fly the moment the sector starts."
 										]
 									}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 										type: "button",
@@ -3753,6 +3894,12 @@ function HalcyonOps() {
 										onClick: (e) => begin(e.currentTarget),
 										children: link?.lead ? "Launch wing" : "Start"
 									}),
+									canTake ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										className: "engage ghost",
+										onClick: takeLead,
+										children: "Take the lead"
+									}) : null,
 									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 										className: "wing",
 										children: [
@@ -3785,22 +3932,26 @@ function HalcyonOps() {
 													className: "roster",
 													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", {
 														className: "ok",
-														children: ["You · ", link.name]
+														children: [
+															"You · ",
+															link.name,
+															link.lead ? " · lead" : ""
+														]
 													}), netUi.peers.map((peer) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", {
 														className: peer.connectionState === "connected" ? "ok" : peer.connectionState === "failed" ? "bad" : "",
 														children: [
-															(peer.name || "WING").slice(0, 12),
+															peerLabel(peer.name),
 															" · ",
 															peer.connectionState,
 															typeof peer.rttMs === "number" ? ` · ${peer.rttMs}ms` : ""
 														]
 													}, peer.id))]
 												}),
-												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-													type: "button",
-													className: "leave",
-													onClick: leaveWing,
-													children: "Leave channel"
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)(WingShare, {
+													copied,
+													code: link.code,
+													onCopy: copyLink,
+													onLeave: leaveWing
 												})
 											] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 												className: "wing-actions",
@@ -3912,6 +4063,54 @@ function makeCode() {
 	let code = "";
 	for (let i = 0; i < 4; i++) code += alphabet[Math.floor(Math.random() * 32)];
 	return code;
+}
+var LEAD_KEY = "halcyon-ops-lead";
+function cleanCall(raw) {
+	return (raw.trim() || "OPS").toUpperCase().replace(/[^A-Z0-9 _-]/g, "").slice(0, 12) || "OPS";
+}
+function cleanCode(raw) {
+	return raw.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+}
+function wingUrl(code) {
+	const url = new URL(window.location.href);
+	url.searchParams.set("w", code);
+	url.hash = "";
+	return url.toString();
+}
+function writeWingUrl(code) {
+	const url = new URL(wingUrl(code));
+	window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+}
+function clearWingUrl() {
+	const url = new URL(window.location.href);
+	url.searchParams.delete("w");
+	url.hash = "";
+	const search = url.searchParams.toString();
+	window.history.replaceState(null, "", `${url.pathname}${search ? `?${search}` : ""}`);
+}
+function peerLabel(name) {
+	const lead = name.startsWith("!");
+	const call = name.replace(/^!/, "").slice(0, 12) || "WING";
+	return lead ? `${call} · lead` : call;
+}
+function WingShare({ copied, code, onCopy, onLeave }) {
+	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+		className: "linkline",
+		children: wingUrl(code).replace(/^https?:\/\//, "")
+	}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+		className: "wing-actions",
+		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+			type: "button",
+			className: "engage ghost",
+			onClick: onCopy,
+			children: copied === "copied" ? "Link copied" : "Copy link"
+		}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+			type: "button",
+			className: "engage ghost",
+			onClick: onLeave,
+			children: ["Leave ", code]
+		})]
+	})] });
 }
 function bagOf(canvas) {
 	return canvas?.__touch;
