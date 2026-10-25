@@ -208,6 +208,16 @@
   color: var(--color-danger);
 }
 
+.linkline {
+  margin: 0.2rem 0 0;
+  color: var(--color-accent);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  letter-spacing: 0.03em;
+  user-select: text;
+  word-break: break-all;
+}
+
 .leave {
   justify-self: start;
   min-height: 44px;

@@ -48,7 +48,7 @@ export function WingLink({
   simRef: { current: Sim | null };
   onStatus: (status: NetStatus) => void;
 }) {
-  const p2p = useP2PRoom({ room, name });
+  const p2p = useP2PRoom({ room, name: lead ? `!${name}` : name });
   const peersRef = useRef(p2p.peers);
   peersRef.current = p2p.peers;
   const bags = useRef(new Map<string, HeldInput>());
@@ -62,7 +62,9 @@ export function WingLink({
   const spinHold = useRef(0);
   const actSeq = useRef(0);
   const hostGone = useRef(false);
+  const sawLead = useRef(false);
   const miss = useRef<number | null>(null);
+  const greeted = useRef(new Set<string>());
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
 
@@ -71,7 +73,9 @@ export function WingLink({
       ingest(bags.current, _from, data);
       return;
     }
-    if (isSnap(data)) latest.current = data;
+    if (isSnap(data) && (!latest.current || data.tick > latest.current.tick)) {
+      latest.current = data;
+    }
   }), [p2p.onMessage, lead]);
 
   useEffect(() => {
@@ -84,15 +88,42 @@ export function WingLink({
   }, [p2p.joined, p2p.peers, p2p.selfId]);
 
   useEffect(() => {
+    if (!lead) return;
+    const live = p2p.peers.filter((peer) => peer.connectionState === "connected");
+    const ids = new Set(live.map((peer) => peer.id));
+    for (const id of greeted.current) if (!ids.has(id)) greeted.current.delete(id);
+    const sim = simRef.current;
+    if (!sim || sim.phase === "title") return;
+    for (const peer of live) {
+      if (greeted.current.has(peer.id)) continue;
+      greeted.current.add(peer.id);
+      tick.current += 1;
+      p2p.send(packSnap(sim, p2p.selfId, name, tick.current, []), peer.id);
+    }
+  }, [lead, name, p2p.peers, p2p.selfId, p2p.send, simRef]);
+
+  useEffect(() => {
     if (lead) return;
+    const marked = p2p.peers.some(
+      (peer) => peer.name.startsWith("!") && peer.connectionState === "connected",
+    );
     const host = latest.current?.host || view.current.host;
-    if (!host) return;
-    const up = p2p.peers.some((peer) => peer.id === host && peer.connectionState === "connected");
-    if (up) {
+    const hostUp = !!host && p2p.peers.some((peer) => peer.id === host && peer.connectionState === "connected");
+    if (marked || hostUp) {
+      sawLead.current = true;
       miss.current = null;
-      hostGone.current = false;
+      if (hostGone.current) {
+        hostGone.current = false;
+        onStatusRef.current({
+          joined: p2p.joined,
+          peers: p2p.peers,
+          hostGone: false,
+          selfId: p2p.selfId,
+        });
+      }
       return;
     }
+    if (!sawLead.current) return;
     if (miss.current == null) miss.current = Date.now();
     const timer = window.setTimeout(() => {
       if (!miss.current || Date.now() - miss.current < 2500) return;
@@ -122,7 +153,7 @@ export function WingLink({
       peersRef.current
         .filter((peer) => peer.connectionState === "connected")
         .slice(0, 3)
-        .map((peer) => ({ id: peer.id, name: peer.name || "WING" })),
+        .map((peer) => ({ id: peer.id, name: (peer.name || "WING").replace(/^!/, "") || "WING" })),
     matching: () => {
       const snap = latest.current;
       return !hostGone.current && !!snap && snap.phase !== "title";
@@ -139,7 +170,7 @@ export function WingLink({
     follow: (sim, dt) => {
       const snap = latest.current;
       if (!snap || hostGone.current) return;
-      if (snap.tick !== view.current.tick) {
+      if (snap.tick > view.current.tick) {
         const ev = snap.ev ?? [];
         applySnap(sim, view.current, snap, p2p.selfId);
         if (ev.length) sim.events.push(...ev);

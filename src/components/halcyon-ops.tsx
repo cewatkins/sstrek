@@ -31,6 +31,8 @@ export function HalcyonOps() {
   const [code, setCode] = useState("");
   const [link, setLink] = useState<{ room: string; name: string; lead: boolean; code: string } | null>(null);
   const [netUi, setNetUi] = useState<NetStatus>({ joined: false, peers: [], hostGone: false, selfId: "" });
+  const [note, setNote] = useState("");
+  const [copied, setCopied] = useState("");
   const netRef = useRef<NetLink | null>(null);
   const onStatus = useCallback((status: NetStatus) => {
     setNetUi(status);
@@ -162,6 +164,7 @@ export function HalcyonOps() {
       last = now;
       const net = netRef.current;
       if (net && !net.lead && net.matching()) {
+        sim.t += dt;
         const input = sample();
         net.follow(sim, dt);
         net.pushInput(input, now);
@@ -209,6 +212,15 @@ export function HalcyonOps() {
       window.__controlsTest = {
         getYaw: () => sim.player.yaw,
         getSpeed: () => sim.player.speed,
+        getPhase: () => sim.phase,
+        getWings: () =>
+          sim.wings.map((wing) => ({
+            id: wing.id,
+            x: wing.ship.x,
+            z: wing.ship.z,
+            yaw: wing.ship.yaw,
+            spd: wing.ship.speed,
+          })),
         setKeys: (codes: string[]) => {
           injected.clear();
           for (const code of codes) injected.add(code);
@@ -236,14 +248,42 @@ export function HalcyonOps() {
   }, []);
 
   useEffect(() => {
+    let saved = "OPS";
     try {
-      const saved = localStorage.getItem("halcyon-ops-call");
-      if (saved) setCall(saved.slice(0, 12));
+      const raw = localStorage.getItem("halcyon-ops-call");
+      if (raw) saved = raw.slice(0, 12);
     } catch {
       /* private mode */
     }
+    const name = cleanCall(saved);
+    setCall(name);
+    const fromUrl = cleanCode(new URLSearchParams(window.location.search).get("w") ?? "");
+    if (fromUrl.length === 4) {
+      let lead = false;
+      try {
+        lead = sessionStorage.getItem(LEAD_KEY) === fromUrl;
+      } catch {
+        /* private mode */
+      }
+      setCode(fromUrl);
+      setLink({ room: `w${fromUrl}`, name, lead, code: fromUrl });
+      return;
+    }
     setCode(makeCode());
   }, []);
+
+  useEffect(() => {
+    if (!link?.lead || !netUi.selfId) return;
+    const beaten = netUi.peers.some((peer) => peer.name.startsWith("!") && peer.id < netUi.selfId);
+    if (!beaten) return;
+    try {
+      if (sessionStorage.getItem(LEAD_KEY) === link.code) sessionStorage.removeItem(LEAD_KEY);
+    } catch {
+      /* private mode */
+    }
+    setNote("This wing already has a lead. You're flying with them.");
+    setLink({ ...link, lead: false });
+  }, [link, netUi.peers, netUi.selfId]);
 
   const begin = (button?: HTMLButtonElement) => {
     button?.blur();
@@ -269,22 +309,52 @@ export function HalcyonOps() {
 
   const playing = phase === "play" || phase === "clear";
   const waiting = !!(link && !link.lead);
+  const [alone, setAlone] = useState(false);
+  useEffect(() => {
+    if (!link || link.lead || !netUi.joined || netUi.peers.length > 0) {
+      setAlone(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setAlone(true), 2000);
+    return () => window.clearTimeout(timer);
+  }, [link, netUi.joined, netUi.peers.length]);
+  const canTake = !!link && !link.lead && (netUi.hostGone || alone);
+  const wingCount = 1 + netUi.peers.filter((peer) => peer.connectionState === "connected").length;
 
   const openWing = (lead: boolean) => {
-    const clean = code.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+    const clean = cleanCode(code);
     if (clean.length < 4) return;
-    const name = (call.trim() || "OPS").toUpperCase().replace(/[^A-Z0-9 _-]/g, "").slice(0, 12) || "OPS";
+    const name = cleanCall(call);
     try {
       localStorage.setItem("halcyon-ops-call", name);
     } catch {
       /* private mode */
     }
+    try {
+      if (lead) sessionStorage.setItem(LEAD_KEY, clean);
+      else if (sessionStorage.getItem(LEAD_KEY) === clean) sessionStorage.removeItem(LEAD_KEY);
+    } catch {
+      /* private mode */
+    }
+    writeWingUrl(clean);
+    setCode(clean);
+    setCall(name);
+    setNote("");
     setLink({ room: `w${clean}`, name, lead, code: clean });
   };
 
   const leaveWing = () => {
     const wasLead = link?.lead;
+    const codeLeft = link?.code;
     setLink(null);
+    setNote("");
+    setCopied("");
+    try {
+      if (sessionStorage.getItem(LEAD_KEY) === codeLeft) sessionStorage.removeItem(LEAD_KEY);
+    } catch {
+      /* private mode */
+    }
+    clearWingUrl();
     const sim = simRef.current;
     if (!sim) return;
     if (wasLead) {
@@ -298,6 +368,33 @@ export function HalcyonOps() {
       setPhase("title");
       setScore(0);
     }
+  };
+
+  const copyLink = () => {
+    if (!link) return;
+    const url = wingUrl(link.code);
+    const done = (value: string) => {
+      setCopied(value);
+      window.setTimeout(() => setCopied(""), 2200);
+    };
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(url).then(() => done("copied")).catch(() => done(url));
+    } else {
+      done(url);
+    }
+  };
+
+  const takeLead = () => {
+    if (!link) return;
+    try {
+      sessionStorage.setItem(LEAD_KEY, link.code);
+    } catch {
+      /* private mode */
+    }
+    writeWingUrl(link.code);
+    setNetUi((status) => ({ ...status, hostGone: false }));
+    setNote("");
+    setLink({ ...link, lead: true });
   };
 
   return (
@@ -351,9 +448,9 @@ export function HalcyonOps() {
           }}
         />
         {playing && link ? (
-          <p className="wing-pill">
-            {link.lead ? "LEAD" : "WING"} {link.code} · {1 + netUi.peers.filter((peer) => peer.connectionState === "connected").length}
-          </p>
+          <button type="button" className="wing-pill" onClick={copyLink}>
+            {copied === "copied" ? "LINK COPIED" : `${link.lead ? "LEAD" : "WING"} ${link.code} · ${wingCount} · COPY`}
+          </button>
         ) : null}
         <p className="sr-only" aria-live="polite">
           {banner}
@@ -371,11 +468,18 @@ export function HalcyonOps() {
                       ? " The lead can launch the wing again."
                       : " Dock sooner, spend the burst, save the warp for the knife-fight."}
                   </p>
-                  {link && !link.lead ? null : (
+                  {link && !link.lead ? (
+                    canTake ? (
+                      <button type="button" className="engage" onClick={takeLead}>
+                        Take the lead
+                      </button>
+                    ) : null
+                  ) : (
                     <button type="button" className="engage" onClick={(e) => begin(e.currentTarget)}>
                       {link?.lead ? "Launch wing" : "Start"}
                     </button>
                   )}
+                  {link ? <WingShare copied={copied} code={link.code} onCopy={copyLink} onLeave={leaveWing} /> : null}
                 </>
               ) : phase === "pause" ? (
                 <>
@@ -387,19 +491,27 @@ export function HalcyonOps() {
               ) : (
                 <>
                   <p className="blurb">
-                    {netUi.hostGone
-                      ? "The wing lead dropped. Open the channel again, or fly the sector alone."
-                      : "Share a wing code with one to three other cruisers, or start alone. The host launches. Everyone flies the same sector."}
+                    {note
+                      ? note
+                      : netUi.hostGone
+                        ? "The wing lead dropped. Take the lead, or leave and fly alone."
+                        : "Host a wing and copy the link. Up to four cruisers share one sector and one score. Or start alone."}
                   </p>
                   <p className="keysline">A/D turn · W impulse · Shift warp · Space lance · F burst</p>
-                  <p className="blurb">Shields, then shells, then warp. The wing shares one score.</p>
                   {waiting ? (
-                    <p className="blurb">Channel {link?.code} is open. The lead launches. You fly as soon as the sector starts.</p>
+                    <p className="blurb">
+                      Wing {link?.code} is open. The lead launches. You fly the moment the sector starts.
+                    </p>
                   ) : (
                     <button type="button" className="engage" onClick={(e) => begin(e.currentTarget)}>
                       {link?.lead ? "Launch wing" : "Start"}
                     </button>
                   )}
+                  {canTake ? (
+                    <button type="button" className="engage ghost" onClick={takeLead}>
+                      Take the lead
+                    </button>
+                  ) : null}
                   <div className="wing">
                     <label>
                       Callsign
@@ -429,17 +541,15 @@ export function HalcyonOps() {
                           {link.lead ? " · YOU LEAD" : " · JOINED"}
                         </p>
                         <ul className="roster">
-                          <li className="ok">You · {link.name}</li>
+                          <li className="ok">You · {link.name}{link.lead ? " · lead" : ""}</li>
                           {netUi.peers.map((peer) => (
                             <li key={peer.id} className={peer.connectionState === "connected" ? "ok" : peer.connectionState === "failed" ? "bad" : ""}>
-                              {(peer.name || "WING").slice(0, 12)} · {peer.connectionState}
+                              {peerLabel(peer.name)} · {peer.connectionState}
                               {typeof peer.rttMs === "number" ? ` · ${peer.rttMs}ms` : ""}
                             </li>
                           ))}
                         </ul>
-                        <button type="button" className="leave" onClick={leaveWing}>
-                          Leave channel
-                        </button>
+                        <WingShare copied={copied} code={link.code} onCopy={copyLink} onLeave={leaveWing} />
                       </>
                     ) : (
                       <div className="wing-actions">
@@ -529,6 +639,68 @@ function makeCode(): string {
   return code;
 }
 
+const LEAD_KEY = "halcyon-ops-lead";
+
+function cleanCall(raw: string): string {
+  return (raw.trim() || "OPS").toUpperCase().replace(/[^A-Z0-9 _-]/g, "").slice(0, 12) || "OPS";
+}
+
+function cleanCode(raw: string): string {
+  return raw.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+}
+
+function wingUrl(code: string): string {
+  const url = new URL(window.location.href);
+  url.searchParams.set("w", code);
+  url.hash = "";
+  return url.toString();
+}
+
+function writeWingUrl(code: string): void {
+  const url = new URL(wingUrl(code));
+  window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+}
+
+function clearWingUrl(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("w");
+  url.hash = "";
+  const search = url.searchParams.toString();
+  window.history.replaceState(null, "", `${url.pathname}${search ? `?${search}` : ""}`);
+}
+
+function peerLabel(name: string): string {
+  const lead = name.startsWith("!");
+  const call = name.replace(/^!/, "").slice(0, 12) || "WING";
+  return lead ? `${call} · lead` : call;
+}
+
+function WingShare({
+  copied,
+  code,
+  onCopy,
+  onLeave,
+}: {
+  copied: string;
+  code: string;
+  onCopy: () => void;
+  onLeave: () => void;
+}) {
+  return (
+    <>
+      <p className="linkline">{wingUrl(code).replace(/^https?:\/\//, "")}</p>
+      <div className="wing-actions">
+        <button type="button" className="engage ghost" onClick={onCopy}>
+          {copied === "copied" ? "Link copied" : "Copy link"}
+        </button>
+        <button type="button" className="engage ghost" onClick={onLeave}>
+          Leave {code}
+        </button>
+      </div>
+    </>
+  );
+}
+
 function bagOf(canvas: HTMLCanvasElement | null): TouchState | undefined {
   return (canvas as (HTMLCanvasElement & { __touch?: TouchState }) | null)?.__touch;
 }
@@ -571,6 +743,8 @@ declare global {
     __controlsTest?: {
       getYaw: () => number;
       getSpeed: () => number;
+      getPhase: () => string;
+      getWings: () => { id: string; x: number; z: number; yaw: number; spd: number }[];
       setKeys?: (codes: string[]) => void;
       setSteer?: (v: number) => void;
     };
